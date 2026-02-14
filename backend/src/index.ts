@@ -3,7 +3,7 @@ import cors from "cors";
 import { env } from "./config/env.js";
 import { connectDb } from "./config/db.js";
 import { healthRouter } from "./routes/health.js";
-import { binRouter } from "./routes/binRoutes.js";
+import { binRouter } from "./routes/binroutes.js";
 
 async function main() {
   const app = express();
