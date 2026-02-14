@@ -1,7 +1,15 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";
-import { CheckCircle, Trash2, Recycle, Leaf, Award, TrendingUp, MapPin } from "lucide-react";
+import {
+  CheckCircle,
+  Trash2,
+  Recycle,
+  Leaf,
+  Award,
+  TrendingUp,
+  MapPin,
+} from "lucide-react";
 import type { ItemType } from "../data/mockData";
 import { getPointsForItemType } from "../data/mockData";
 
@@ -10,11 +18,16 @@ export function ScanResult() {
   const [itemType, setItemType] = useState<ItemType>("recycle");
   const [showConfetti, setShowConfetti] = useState(false);
 
+  // NEW
+  const [scanImage, setScanImage] = useState<string | null>(null);
+
   useEffect(() => {
-    const storedType = sessionStorage.getItem("lastScanType") as ItemType;
-    if (storedType) {
-      setItemType(storedType);
-    }
+    const storedType = sessionStorage.getItem("lastScanType") as ItemType | null;
+    if (storedType) setItemType(storedType);
+
+    const storedImg = sessionStorage.getItem("lastScanImage");
+    if (storedImg) setScanImage(storedImg);
+
     setShowConfetti(true);
   }, []);
 
@@ -51,20 +64,24 @@ export function ScanResult() {
       impact: "You're helping create nutrient-rich soil!",
       emoji: "🌱",
     },
-  };
+  } as const;
 
   const config = typeConfig[itemType];
   const Icon = config.icon;
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-green-50 to-blue-50 p-6 flex flex-col">
+    <div className="relative h-[100dvh] overflow-y-auto bg-gradient-to-b from-green-50 to-blue-50 p-6 flex flex-col">
       {/* Confetti effect */}
       {showConfetti && (
-        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="relative inset-0 pointer-events-none">
           {[...Array(20)].map((_, i) => (
             <motion.div
               key={i}
-              initial={{ y: -100, x: Math.random() * window.innerWidth, opacity: 1 }}
+              initial={{
+                y: -100,
+                x: Math.random() * window.innerWidth,
+                opacity: 1,
+              }}
               animate={{ y: window.innerHeight + 100, opacity: 0 }}
               transition={{
                 duration: 2 + Math.random() * 2,
@@ -105,12 +122,18 @@ export function ScanResult() {
         className={`${config.bgColor} rounded-3xl p-6 mb-6`}
       >
         <div className="flex items-center gap-4 mb-4">
-          <div className={`w-16 h-16 ${config.accentColor} rounded-2xl flex items-center justify-center text-white`}>
+          <div
+            className={`w-16 h-16 ${config.accentColor} rounded-2xl flex items-center justify-center text-white`}
+          >
             <Icon size={32} />
           </div>
           <div className="flex-1">
-            <div className={`text-sm ${config.textColor} font-medium`}>Detected</div>
-            <div className="text-2xl font-bold text-gray-800">{config.title}</div>
+            <div className={`text-sm ${config.textColor} font-medium`}>
+              Detected
+            </div>
+            <div className="text-2xl font-bold text-gray-800">
+              {config.title}
+            </div>
           </div>
           <div className="text-5xl">{config.emoji}</div>
         </div>
@@ -120,12 +143,37 @@ export function ScanResult() {
           <div className="flex items-start gap-3">
             <TrendingUp size={20} className="text-green-600 mt-1" />
             <div>
-              <div className="font-medium text-gray-800">Environmental Impact</div>
+              <div className="font-medium text-gray-800">
+                Environmental Impact
+              </div>
               <div className="text-sm text-gray-600 mt-1">{config.impact}</div>
             </div>
           </div>
         </div>
       </motion.div>
+
+      {/* Captured image */}
+      {scanImage && (
+        <motion.div
+          initial={{ y: 50, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ delay: 0.4 }}
+          className="bg-white rounded-3xl p-4 mb-6 shadow-lg"
+        >
+          <div className="flex items-center justify-between mb-3">
+            <div className="font-bold text-gray-800">Captured Image</div>
+            <div className="text-xs text-gray-500">Latest scan</div>
+          </div>
+
+          <div className="rounded-2xl bg-gray-100">
+            <img
+              src={scanImage}
+              alt="Last scanned item"
+              className="w-full h-56 object-cover"
+            />
+          </div>
+        </motion.div>
+      )}
 
       {/* Points earned */}
       <motion.div
@@ -167,8 +215,13 @@ export function ScanResult() {
           Next Steps
         </h3>
         <p className="text-gray-600 text-sm mb-4">
-          Find the nearest {itemType === "trash" ? "trash bin" : itemType === "recycle" ? "recycling bin" : "compost bin"} to
-          properly dispose of this item.
+          Find the nearest{" "}
+          {itemType === "trash"
+            ? "trash bin"
+            : itemType === "recycle"
+            ? "recycling bin"
+            : "compost bin"}{" "}
+          to properly dispose of this item.
         </p>
         <button
           onClick={() => navigate("/disposal")}
