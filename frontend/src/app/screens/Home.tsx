@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -38,9 +38,59 @@ interface CleanupHotspot {
   recentActivity: number;
 }
 
+const LUCIDE_PATHS: Record<BinType, string[]> = {
+  recycle: [
+    // lucide "recycle" icon path(s)
+    "M7 19H4v-3",
+    "M4 16a8 8 0 0 1 13.657-5.657L20 12",
+    "M20 5v3h-3",
+    "M20 8a8 8 0 0 1-13.657 5.657L4 12",
+  ],
+  compost: [
+    // lucide "leaf" icon path(s)
+    "M11 20A7 7 0 0 1 4 13C4 7 11 4 20 4c0 9-3 16-9 16Z",
+    "M20 4c-6 1-11 6-12 12",
+  ],
+  trash: [
+    // lucide "trash-2" icon path(s)
+    "M3 6h18",
+    "M8 6V4h8v2",
+    "M19 6l-1 14H6L5 6",
+    "M10 11v6",
+    "M14 11v6",
+  ],
+};
+
+const getLucideMarkerIcon = (type: BinType): google.maps.Symbol => {
+  // Combine paths into a single path string.
+  // Google Maps Symbol path supports SVG path commands.
+  const path = LUCIDE_PATHS[type].join(" ");
+
+  const colors =
+    type === "recycle"
+      ? { stroke: "#2563eb", fill: "#2563eb" } // blue
+      : type === "compost"
+        ? { stroke: "#16a34a", fill: "#16a34a" } // green
+        : { stroke: "#4b5563", fill: "#4b5563" }; // gray
+
+  return {
+    path,
+    fillColor: colors.fill,
+    fillOpacity: 1,
+    strokeColor: colors.stroke,
+    strokeOpacity: 1,
+    strokeWeight: 2,
+    // Adjust these to get your preferred size
+    scale: 1.6,
+    // Centers the icon on the coordinate (tweak if needed)
+    anchor: new google.maps.Point(12, 12),
+  };
+};
+
 export function Home() {
   const navigate = useNavigate();
   const [selectedFilter, setSelectedFilter] = useState<BinType | "all">("all");
+  const [map, setMap] = useState<google.maps.Map | null>(null);
   const [showLocationList, setShowLocationList] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<BinLocation | null>(
     null,
@@ -48,6 +98,7 @@ export function Home() {
 
   const { isLoaded } = useLoadScript({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
+    libraries: ["marker"],
   });
 
   const sfCenter = { lat: 37.7749, lng: -122.4194 };
@@ -134,45 +185,94 @@ export function Home() {
 
   // ...existing code...
 
-const getBinIconUrl = (type: BinType) => {
-  switch (type) {
-    case "recycle":
-      return "https://maps.google.com/mapfiles/ms/icons/blue-dot.png"; // Blue for recycle
-    case "compost":
-      return "https://maps.google.com/mapfiles/ms/icons/green-dot.png"; // Green for compost
-    case "trash":
-      return "https://maps.google.com/mapfiles/ms/icons/gray-dot.png"; // Gray for trash
-    default:
-      return "https://maps.google.com/mapfiles/ms/icons/red-dot.png"; // Default red
-  }
-};
+  useEffect(() => {
+    if (!map || !isLoaded) return;
 
-// Inside the GoogleMap component
-// ...existing code...
+    const markers: google.maps.marker.AdvancedMarkerElement[] = [];
 
-<GoogleMap
-  mapContainerStyle={{ width: "100%", height: "100%" }}
-  center={sfCenter}
-  zoom={13}
-  options={{
-    disableDefaultUI: true,
-    clickableIcons: false,
-  }}
->
-  {/* Render markers only if the Google Maps API is loaded */}
-  {isLoaded &&
-    filteredBins.map((bin) => (
-      <Marker
-        key={bin.id}
-        position={bin.position}
-        onClick={() => setSelectedLocation(bin)}
-        icon={{
-          url: getBinIconUrl(bin.type), // Set the custom icon URL
-          scaledSize: new window.google.maps.Size(40, 40), // Adjust the size of the icon
-        }}
-      />
-    ))}
-</GoogleMap>
+    const makeBadge = (type: BinType) => {
+      const el = document.createElement("div");
+      el.style.width = "56px";
+      el.style.height = "56px";
+      el.style.borderRadius = "16px";
+      el.style.display = "grid";
+      el.style.placeItems = "center";
+      el.style.border = "4px solid white";
+      el.style.boxShadow = "0 10px 25px rgba(0,0,0,0.18)";
+      el.style.cursor = "pointer";
+
+      // Match sidebar: white icon when “active” style.
+      // On map, we’ll always do colored background + white icon (clean).
+      const bg =
+        type === "recycle"
+          ? "#3b82f6"
+          : type === "compost"
+            ? "#22c55e"
+            : "#6b7280";
+
+      el.style.background = bg;
+      el.innerHTML = lucideSvg(type, "white");
+      return el;
+    };
+
+    filteredBins.forEach((bin) => {
+      const content = makeBadge(bin.type);
+      content.addEventListener("click", () => setSelectedLocation(bin));
+
+      const marker = new google.maps.marker.AdvancedMarkerElement({
+        map,
+        position: bin.position,
+        content,
+      });
+
+      markers.push(marker);
+    });
+
+    // --- Add cleanup hotspot markers ---
+    cleanupHotspots.forEach((hotspot) => {
+      const el = document.createElement("div");
+      el.style.width = "48px";
+      el.style.height = "48px";
+      el.style.borderRadius = "50%";
+      el.style.background = "#f97316"; // orange
+      el.style.display = "flex";
+      el.style.alignItems = "center";
+      el.style.justifyContent = "center";
+      el.style.boxShadow = "0 10px 25px rgba(0,0,0,0.18)";
+      el.style.border = "4px solid white";
+      el.style.fontWeight = "bold";
+      el.style.fontSize = "1rem";
+      el.style.color = "white";
+      el.style.cursor = "pointer";
+      el.innerText = `${hotspot.itemCount}`;
+      // Optionally, add a pulse effect with CSS class or animation
+
+      const marker = new google.maps.marker.AdvancedMarkerElement({
+        map,
+        position: hotspot.position,
+        content: el,
+      });
+      markers.push(marker);
+    });
+
+    // Cleanup function to remove all markers from the map
+    return () => {
+      markers.forEach((m) => (m.map = null));
+    };
+  }, [map, isLoaded, filteredBins]);
+
+  const getBinIconUrl = (type: BinType) => {
+    switch (type) {
+      case "recycle":
+        return "https://maps.google.com/mapfiles/ms/icons/blue-dot.png"; // Blue for recycle
+      case "compost":
+        return "https://maps.google.com/mapfiles/ms/icons/green-dot.png"; // Green for compost
+      case "trash":
+        return "https://maps.google.com/mapfiles/ms/icons/gray-dot.png"; // Gray for trash
+      default:
+        return "https://maps.google.com/mapfiles/ms/icons/red-dot.png"; // Default red
+    }
+  };
 
   const getBinColor = (type: BinType) => {
     switch (type) {
@@ -201,6 +301,43 @@ const getBinIconUrl = (type: BinType) => {
     window.open(url, "_blank");
   };
 
+  const lucideSvg = (type: BinType, stroke: string) => {
+    // These paths match Lucide icons (stroke-only). They’ll render like your sidebar.
+    const paths =
+      type === "recycle"
+        ? `
+        <path d="M7 19H4v-3"/>
+        <path d="M4 16a8 8 0 0 1 13.657-5.657L20 12"/>
+        <path d="M20 5v3h-3"/>
+        <path d="M20 8a8 8 0 0 1-13.657 5.657L4 12"/>
+      `
+        : type === "compost"
+          ? `
+        <path d="M11 20A7 7 0 0 1 4 13C4 7 11 4 20 4c0 9-3 16-9 16Z"/>
+        <path d="M20 4c-6 1-11 6-12 12"/>
+      `
+          : `
+        <path d="M3 6h18"/>
+        <path d="M8 6V4h8v2"/>
+        <path d="M19 6l-1 14H6L5 6"/>
+        <path d="M10 11v6"/>
+        <path d="M14 11v6"/>
+      `;
+
+    return `
+    <svg xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      width="24" height="24"
+      fill="none"
+      stroke="${stroke}"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round">
+      ${paths}
+    </svg>
+  `;
+  };
+
   return (
     <div className="w-full h-screen bg-gradient-to-b from-green-50 to-blue-50 overflow-hidden flex flex-col">
       {/* Container with max width for desktop */}
@@ -210,23 +347,19 @@ const getBinIconUrl = (type: BinType) => {
           {!isLoaded ? (
             <div className="w-full h-full bg-gray-100" />
           ) : (
+            // Inside the GoogleMap component
             <GoogleMap
               mapContainerStyle={{ width: "100%", height: "100%" }}
               center={sfCenter}
               zoom={13}
+              onLoad={(m) => setMap(m)}
               options={{
                 disableDefaultUI: true,
                 clickableIcons: false,
+                mapId: "6fdb0550dd266eb48a8a389c",
               }}
             >
-              {/* Bin markers */}
-              {filteredBins.map((bin) => (
-                <Marker
-                  key={bin.id}
-                  position={bin.position}
-                  onClick={() => setSelectedLocation(bin)}
-                />
-              ))}
+              {/* Render markers only if the Google Maps API is loaded */}
             </GoogleMap>
           )}
         </div>
@@ -362,7 +495,6 @@ const getBinIconUrl = (type: BinType) => {
               </div>
               <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3">
                 {filteredBins.map((bin) => {
-                  const Icon = getBinIconUrl(bin.type);
                   const isSelected = selectedLocation?.id === bin.id;
 
                   return (
@@ -406,6 +538,27 @@ const getBinIconUrl = (type: BinType) => {
                     </motion.button>
                   );
                 })}
+                {cleanupHotspots.map((hotspot) => (
+            <motion.div
+              key={hotspot.id}
+              initial={{ scale: 0, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ delay: 0.2 }}
+              className="absolute z-10"
+              style={{
+                transform: 'translate(-50%, -50%)',
+              }}
+            >
+              <div className="relative">
+                <div className="w-11 h-11 sm:w-12 sm:h-12 bg-orange-500 rounded-full flex items-center justify-center shadow-lg border-3 border-white animate-pulse">
+                  <span className="text-white font-bold text-xs sm:text-sm">{hotspot.recentActivity}</span>
+                </div>
+                <div className="absolute -top-1 -right-1 w-5 h-5 sm:w-6 sm:h-6 bg-red-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">
+                  {hotspot.itemCount}
+                </div>
+              </div>
+            </motion.div>
+          ))}
               </div>
             </motion.div>
           )}
@@ -425,12 +578,11 @@ const getBinIconUrl = (type: BinType) => {
                   <div
                     className={`w-12 h-12 sm:w-14 sm:h-14 ${getBinColor(selectedLocation.type)} rounded-xl flex items-center justify-center flex-shrink-0`}
                   >
-                    {(() => {
-                      const Icon = getBinIconUrl(selectedLocation.type);
-                      return (
-                        <img src={getBinIconUrl(selectedLocation.type)} alt={`${selectedLocation.type} icon`} className="w-6 h-6 sm:w-8 sm:h-8" />
-                      );
-                    })()}
+                    <img
+                      src={getBinIconUrl(selectedLocation.type)}
+                      alt={`${selectedLocation.type} icon`}
+                      className="w-6 h-6 sm:w-8 sm:h-8"
+                    />
                   </div>
                   <div className="flex-1 min-w-0">
                     <h3 className="font-bold text-gray-800 text-base sm:text-lg truncate">
