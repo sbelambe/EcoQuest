@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";
 import {
@@ -18,13 +18,23 @@ export function ScanResult() {
   const topSafeOffset = "calc(env(safe-area-inset-top, 0px) + 12px)";
   const [itemType, setItemType] = useState<ItemType>("recycle");
   const [showConfetti, setShowConfetti] = useState(false);
+  const [scanLoaded, setScanLoaded] = useState(false);
+  const [isLogSaved, setIsLogSaved] = useState(false);
 
   const [label, setLabel] = useState<string>("");
-const [confidence, setConfidence] = useState<number>(0);
+  const [confidence, setConfidence] = useState<number>(0);
 
 
   // NEW
   const [scanImage, setScanImage] = useState<string | null>(null);
+
+  const BACKEND_URL_STORAGE_KEY = "ecoquest_backend_url";
+  const backendBaseUrl = useMemo(() => {
+    const envBackendBaseUrl =
+      (import.meta.env.VITE_BACKEND_URL as string | undefined) ?? "http://localhost:8080";
+    const saved = window.localStorage.getItem(BACKEND_URL_STORAGE_KEY);
+    return (saved ?? envBackendBaseUrl).trim().replace(/\/+$/, "");
+  }, []);
 
   useEffect(() => {
     const storedType = sessionStorage.getItem("lastScanType") as ItemType | null;
@@ -33,16 +43,94 @@ const [confidence, setConfidence] = useState<number>(0);
     const storedImg = sessionStorage.getItem("lastScanImage");
     if (storedImg) setScanImage(storedImg);
 
-      const storedLabel = sessionStorage.getItem("lastScanLabel");
-  if (storedLabel) setLabel(storedLabel);
+    const storedLabel = sessionStorage.getItem("lastScanLabel");
+    if (storedLabel) setLabel(storedLabel);
 
-  const storedConf = sessionStorage.getItem("lastScanConfidence");
-  if (storedConf) setConfidence(Number(storedConf));
+    const storedConf = sessionStorage.getItem("lastScanConfidence");
+    if (storedConf) setConfidence(Number(storedConf));
 
     setShowConfetti(true);
+    setScanLoaded(true);
   }, []);
 
   const points = getPointsForItemType(itemType);
+  const carbonByType: Record<ItemType, number> = {
+    trash: 0.0,
+    recycle: 0.05,
+    compost: 0.03,
+  };
+
+  useEffect(() => {
+    async function saveRecyclingLog() {
+      if (!scanLoaded || isLogSaved) return;
+
+      const scanImageKey = sessionStorage.getItem("lastScanImage") ?? "";
+      const scanLabelKey = sessionStorage.getItem("lastScanLabel") ?? "";
+      const dedupeKey = `${scanImageKey.slice(0, 64)}:${scanLabelKey}:${itemType}`;
+      const previousDedupeKey = sessionStorage.getItem("lastRecyclingLogKey");
+      if (previousDedupeKey && previousDedupeKey === dedupeKey) {
+        setIsLogSaved(true);
+        return;
+      }
+
+      let lat = 37.7793;
+      let lng = -122.4192;
+
+      try {
+        const coords = await new Promise<GeolocationCoordinates>((resolve, reject) => {
+          if (!navigator.geolocation) {
+            reject(new Error("Geolocation unavailable"));
+            return;
+          }
+          navigator.geolocation.getCurrentPosition(
+            (position) => resolve(position.coords),
+            (error) => reject(error),
+            { enableHighAccuracy: true, timeout: 4000 },
+          );
+        });
+        lat = coords.latitude;
+        lng = coords.longitude;
+      } catch {
+        // fall back to Civic Center demo coordinate
+      }
+
+      const payload = {
+        itemType: label || itemType,
+        carbonSaved: carbonByType[itemType] ?? 0,
+        location: {
+          type: "Point",
+          coordinates: [lng, lat],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      try {
+        const response = await fetch(`${backendBaseUrl}/api/recycling-logs`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "ngrok-skip-browser-warning": "true",
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          console.error("[recycling-logs] save failed:", response.status, text);
+          return;
+        }
+
+        console.log("[recycling-logs] saved", payload);
+
+        sessionStorage.setItem("lastRecyclingLogKey", dedupeKey);
+        setIsLogSaved(true);
+      } catch (error) {
+        console.error("[recycling-logs] request failed:", error);
+      }
+    }
+
+    saveRecyclingLog();
+  }, [backendBaseUrl, itemType, label, scanLoaded, isLogSaved]);
 
   const typeConfig = {
     trash: {
@@ -238,7 +326,7 @@ const [confidence, setConfidence] = useState<number>(0);
           to properly dispose of this item.
         </p>
         <button
-          onClick={() => navigate("/disposal")}
+          onClick={() => navigate("/disposal", { state: { itemType } })}
           className="w-full bg-gradient-to-r from-green-500 to-green-600 text-white py-4 rounded-xl font-medium shadow-md hover:shadow-lg transition-shadow"
         >
           Find Nearest Bin
