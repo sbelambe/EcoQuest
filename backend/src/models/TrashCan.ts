@@ -21,6 +21,13 @@ const TrashCanSchema = new Schema(
     sourceId: { type: String, required: true, unique: true, index: true },
     name: { type: String },
     address: { type: String },
+    canColor: { type: String, default: "" },
+    type: {
+      type: String,
+      enum: ["trash", "recycle", "compost"],
+      default: "trash",
+      index: true,
+    },
     location: { type: PointSchema, required: true },
     properties: { type: Schema.Types.Mixed },
     updatedAt: { type: Date, default: Date.now },

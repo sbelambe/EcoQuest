@@ -44,7 +44,7 @@ function toNumber(v: any): number | null {
 
 function inSFBbox(lat: number, lng: number) {
   // Wide sanity bounds around SF
-  return lat >= 37.60 && lat <= 37.90 && lng >= -122.55 && lng <= -122.35;
+  return lat >= 37.6 && lat <= 37.9 && lng >= -122.55 && lng <= -122.35;
 }
 
 function pickAddress(row: Record<string, any>) {
@@ -59,6 +59,20 @@ function pickAddress(row: Record<string, any>) {
     streetcorner ||
     ""
   );
+}
+
+function normalizeCanColor(row: Record<string, any>) {
+  return String(row.cancolor || row.canColor || "")
+    .trim()
+    .toLowerCase();
+}
+
+function mapTypeFromCanColor(
+  canColor: string,
+): "trash" | "recycle" | "compost" {
+  if (canColor === "blue") return "recycle";
+  if (canColor === "green") return "compost";
+  return "trash";
 }
 
 function pickSourceId(row: Record<string, any>) {
@@ -80,7 +94,7 @@ async function main() {
 
   if (!fs.existsSync(INPUT_CSV_PATH)) {
     throw new Error(
-      `Clean CSV not found at ${INPUT_CSV_PATH}. Set TRASH_CANS_CLEAN_CSV_PATH or place file at data/trash_clean.csv`
+      `Clean CSV not found at ${INPUT_CSV_PATH}. Set TRASH_CANS_CLEAN_CSV_PATH or place file at data/trash_clean.csv`,
     );
   }
 
@@ -135,12 +149,21 @@ async function main() {
     }
 
     const address = pickAddress(row);
+    const canColor = normalizeCanColor(row);
+    const type = mapTypeFromCanColor(canColor);
 
     const doc = {
       source: SOURCE,
       sourceId,
-      name: "Trash Can",
+      name:
+        type === "recycle"
+          ? "Recycling Bin"
+          : type === "compost"
+          ? "Compost Bin"
+          : "Trash Can",
       address,
+      canColor,
+      type,
       location: { type: "Point", coordinates: [lng, lat] as [number, number] },
       properties: row, // keep full row for future use
       updatedAt: new Date(),

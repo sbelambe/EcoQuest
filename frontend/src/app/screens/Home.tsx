@@ -114,7 +114,6 @@ export function Home() {
   const [selectedLocation, setSelectedLocation] = useState<BinLocation | null>(
     null,
   );
-  const [showNearbyTrash, setShowNearbyTrash] = useState(false);
   const [showHotspotForm, setShowHotspotForm] = useState(false);
   const [isSubmittingHotspot, setIsSubmittingHotspot] = useState(false);
   const [hotspotSeverity, setHotspotSeverity] = useState(3);
@@ -209,9 +208,7 @@ export function Home() {
   }, [map, isLoaded, activeLocation.lat, activeLocation.lng, binLocations]);
 
   const filteredBins =
-    !showNearbyTrash
-      ? []
-      : selectedFilter === "all"
+    selectedFilter === "all"
       ? binLocations
       : binLocations.filter((bin) => bin.type === selectedFilter);
 
@@ -329,12 +326,6 @@ export function Home() {
   }, [map, isLoaded, filteredBins, activeLocation.lat, activeLocation.lng, cleanupHotspots, submittedBins]);
 
   useEffect(() => {
-  if (!showNearbyTrash) {
-    setBinLocations([]);
-    setDebug({ status: "idle", count: 0 });
-    return;
-  }
-
   const controller = new AbortController();
 
   async function loadNearby() {
@@ -342,91 +333,102 @@ export function Home() {
     const lng = activeLocation.lng;
 
     const base = normalizeBaseUrl(backendBaseUrl);
-    const url = `${base}/api/trashcans/nearby?lat=${lat}&lng=${lng}&limit=10&maxDistance=3000`;
-    // ✅ IMPORTANT: fallback so you don't build "undefined/..."
+    const query = `lat=${lat}&lng=${lng}&limit=10&maxDistance=3000`;
+    const trashUrl = `${base}/api/trashcans/nearby-trash?${query}`;
+    const compostUrl = `${base}/api/trashcans/nearby-compost?${query}`;
+    const recycleUrl = `${base}/api/trashcans/nearby-recycle?${query}`;
+    const urls =
+      selectedFilter === "trash"
+        ? [trashUrl]
+        : selectedFilter === "compost"
+        ? [compostUrl]
+        : selectedFilter === "recycle"
+        ? [recycleUrl]
+        : selectedFilter === "all"
+        ? [trashUrl, compostUrl, recycleUrl]
+        : [];
 
+    console.log("[bins] loadNearby start", { urls, lat, lng, selectedFilter });
+    setDebug({ status: "loading", count: 0, url: urls.join(" | "), lat, lng });
 
-    console.log("[bins] loadNearby start", { url, lat, lng });
-    setDebug({ status: "loading", count: 0, url, lat, lng });
-
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        "ngrok-skip-browser-warning": "true",
-      },
-    });
-    const rawText = await res.text();
-    const contentType = res.headers.get("content-type") ?? "";
-    const data = (() => {
-      try {
-        return rawText ? JSON.parse(rawText) : {};
-      } catch {
-        return {};
-      }
-    })();
-
-    if (!contentType.includes("application/json")) {
-      console.error("[bins] non-json response", {
-        status: res.status,
-        contentType,
-        preview: rawText.slice(0, 240),
-      });
+    if (urls.length === 0) {
+      setBinLocations([]);
       setDebug({
-        status: "non-json response",
+        status: "no route for selected filter",
         count: 0,
-        url,
+        url: "",
         lat,
         lng,
-        httpStatus: res.status,
-        error: rawText.slice(0, 240),
       });
       return;
     }
 
-    if (!res.ok) {
-      console.error("[bins] loadNearby HTTP error", {
-        status: res.status,
-        url,
-        body: rawText.slice(0, 240),
-      });
+    const responses = await Promise.all(
+      urls.map((url) =>
+        fetch(url, {
+          signal: controller.signal,
+          headers: {
+            "ngrok-skip-browser-warning": "true",
+          },
+        }),
+      ),
+    );
+
+    const bodies = await Promise.all(
+      responses.map(async (res) => {
+        const rawText = await res.text();
+        const contentType = res.headers.get("content-type") ?? "";
+        const data = (() => {
+          try {
+            return rawText ? JSON.parse(rawText) : {};
+          } catch {
+            return {};
+          }
+        })();
+        return { res, rawText, contentType, data };
+      }),
+    );
+
+    const firstBad = bodies.find((b) => !b.res.ok || !b.contentType.includes("application/json"));
+    if (firstBad) {
+      const status = firstBad.res.status;
+      const errText = firstBad.rawText.slice(0, 240);
       setDebug({
-        status: `error ${res.status}`,
+        status: `error ${status}`,
         count: 0,
-        url,
+        url: urls.join(" | "),
         lat,
         lng,
-        httpStatus: res.status,
-        error: rawText.slice(0, 240),
+        httpStatus: status,
+        error: errText,
       });
       return;
     }
 
-    const items = (data.items ?? []) as any[];
-    console.log("[bins] loadNearby response", {
-      status: res.status,
-      itemsCount: items.length,
-      firstItem: items[0] ?? null,
-      url,
-    });
-    setBinLocations(
-      items.map((x: any) => ({
+    const items = bodies.flatMap((b: any) => (b.data.items ?? []) as any[]);
+    const mapped = items
+      .map((x: any) => ({
         id: String(x.id),
         name: x.name ?? "Trash Can",
         type: (x.type ?? "trash") as BinType,
         address: x.address ?? "",
         position: x.position,
         distance: x.distance,
-      })),
-    );
+      }));
+
+    const unique = Array.from(new Map(mapped.map((x) => [x.id, x])).values());
+    const topTenForFilter = unique.slice(0, 10);
+
+    setBinLocations(topTenForFilter);
 
     setDebug({
       status: "ok",
-      count: items.length,
-      url,
+      count: topTenForFilter.length,
+      url: urls.join(" | "),
       lat,
       lng,
-      httpStatus: res.status,
-      firstId: items[0]?.id ? String(items[0].id) : undefined,
+      httpStatus: responses[0]?.status,
+      firstId: topTenForFilter[0]?.id ? String(topTenForFilter[0].id) : undefined,
     });
   }
 
@@ -437,7 +439,7 @@ export function Home() {
   });
 
   return () => controller.abort();
-}, [activeLocation.lat, activeLocation.lng, backendBaseUrl, showNearbyTrash]);
+}, [activeLocation.lat, activeLocation.lng, backendBaseUrl, selectedFilter]);
 
   
   const getBinIconUrl = (type: BinType) => {
@@ -820,16 +822,9 @@ export function Home() {
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            onClick={() => {
-              if (selectedFilter === "trash") {
-                setShowNearbyTrash(false);
-                setSelectedFilter("all");
-                setSelectedLocation(null);
-              } else {
-                setShowNearbyTrash(true);
-                setSelectedFilter("trash");
-              }
-            }}
+            onClick={() =>
+              setSelectedFilter(selectedFilter === "trash" ? "all" : "trash")
+            }
             className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl shadow-lg flex items-center justify-center border-2 transition-colors pointer-events-auto touch-manipulation ${
               selectedFilter === "trash"
                 ? "bg-gray-500 border-gray-600"
