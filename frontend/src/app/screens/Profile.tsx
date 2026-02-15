@@ -6,11 +6,15 @@ import { mockUserStats, mockScanHistory, getCurrentTier, mockPet } from "../data
 
 export function Profile() {
   const currentTier = getCurrentTier(mockUserStats.points);
+  const topSafeOffset = "calc(env(safe-area-inset-top, 0px) + 12px)";
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-green-50 to-blue-50 pb-20">
       {/* Header */}
-      <div className="bg-gradient-to-r from-green-600 to-green-500 text-white p-6 rounded-b-3xl shadow-lg">
+      <div
+        className="bg-gradient-to-r from-green-600 to-green-500 text-white p-6 rounded-b-3xl shadow-lg"
+        style={{ paddingTop: topSafeOffset }}
+      >
         <div className="flex items-center gap-4 mb-6">
           <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center text-4xl">
             🦝

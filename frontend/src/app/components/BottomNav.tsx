@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from "react-router";
-import { Home, Award, User } from "lucide-react";
+import { Home, User } from "lucide-react";
 
 export function BottomNav() {
   const navigate = useNavigate();
@@ -7,7 +7,6 @@ export function BottomNav() {
 
   const navItems = [
     { path: "/", icon: Home, label: "Home" },
-    { path: "/leaderboard", icon: Award, label: "Leaderboard" },
     { path: "/profile", icon: User, label: "Profile" },
   ];
 

@@ -13,14 +13,15 @@ import {
 } from "lucide-react";
 import { BottomNav } from "../components/BottomNav";
 import { mockUserStats } from "../data/mockData";
-import { GoogleMap, Marker, useLoadScript } from "@react-google-maps/api";
+import { GoogleMap, useLoadScript } from "@react-google-maps/api";
 import { registerPlugin } from "@capacitor/core";
 
 const EcoQuestVision = registerPlugin<{
   ping: () => Promise<{ ok: boolean; message: string }>;
-  scan: (options: { imageBase64: string }) => Promise<{ binType: string; confidence: number; label: string }>;
+  scan: (options: {
+    imageBase64: string;
+  }) => Promise<{ binType: string; confidence: number; label: string }>;
 }>("EcoQuestVision");
-
 
 type BinType = "recycle" | "compost" | "trash";
 
@@ -30,11 +31,11 @@ interface LatLng {
 }
 
 interface BinLocation {
-  id: number;
+  id: string; // <-- change from number to string
   name: string;
   type: BinType;
   address: string;
-  distance?: string; // optional once we compute it
+  distance?: string;
   position: LatLng;
 }
 
@@ -91,8 +92,8 @@ const getLucideMarkerIcon = (type: BinType): google.maps.Symbol => {
     type === "recycle"
       ? { stroke: "#2563eb", fill: "#2563eb" } // blue
       : type === "compost"
-        ? { stroke: "#16a34a", fill: "#16a34a" } // green
-        : { stroke: "#4b5563", fill: "#4b5563" }; // gray
+      ? { stroke: "#16a34a", fill: "#16a34a" } // green
+      : { stroke: "#4b5563", fill: "#4b5563" }; // gray
 
   return {
     path,
@@ -107,6 +108,11 @@ const getLucideMarkerIcon = (type: BinType): google.maps.Symbol => {
     anchor: new google.maps.Point(12, 12),
   };
 };
+const PROXY_LOCATIONS = [
+  { key: "mission", label: "Mission (test)", lat: 37.7596, lng: -122.4269 },
+  { key: "civic", label: "Civic Center", lat: 37.7793, lng: -122.4192 },
+  { key: "ferry", label: "Ferry Building", lat: 37.7955, lng: -122.3937 },
+] as const;
 
 export function Home() {
   const navigate = useNavigate();
@@ -124,94 +130,74 @@ export function Home() {
   const [hotspotImageName, setHotspotImageName] = useState("");
   const [hotspotError, setHotspotError] = useState<string | null>(null);
 
+  const [useProxy, setUseProxy] = useState(true);
+  const [proxyKey, setProxyKey] =
+    useState<(typeof PROXY_LOCATIONS)[number]["key"]>("civic");
+  const [userLocation, setUserLocation] = useState<LatLng>(PROXY_LOCATIONS[0]);
+  const [binLocations, setBinLocations] = useState<BinLocation[]>([]);
+
+  const activeLocation = useProxy
+    ? PROXY_LOCATIONS.find((p) => p.key === proxyKey) ?? PROXY_LOCATIONS[0]
+    : userLocation;
+
   const { isLoaded } = useLoadScript({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
     libraries: ["marker"],
   });
 
-  const sfCenter = { lat: 37.7749, lng: -122.4194 };
-  const envBackendBaseUrl =
-    (import.meta.env.VITE_BACKEND_URL as string | undefined) ??
-    "http://localhost:8080";
-  const [backendBaseUrl, setBackendBaseUrl] = useState(() => {
-    const saved = window.localStorage.getItem(BACKEND_URL_STORAGE_KEY);
-    return normalizeBaseUrl(saved ?? envBackendBaseUrl);
-  });
+  const [debug, setDebug] = useState<{ status: string; count: number; url?: string }>({
+  status: "idle",
+  count: 0,
+});
+  const topSafeOffset = "calc(env(safe-area-inset-top, 0px) + 12px)";
+  const topOverlayOffset = "calc(env(safe-area-inset-top, 0px) + 88px)";
 
-  const reportLocation = {
-    lat: 37.7793,
-    lng: -122.4192,
+  const sfCenter = activeLocation;
+
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setUserLocation({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        });
+        setUseProxy(false);
+      },
+      () => {
+        // Keep proxy location when geolocation is unavailable/denied.
+      },
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!map || !isLoaded) return;
+
+    const bounds = new google.maps.LatLngBounds();
+    bounds.extend(activeLocation);
+
+    binLocations.slice(0, 10).forEach((bin) => bounds.extend(bin.position));
+
+    map.fitBounds(bounds, 80);
+
+    const idleListener = google.maps.event.addListenerOnce(map, "idle", () => {
+      const currentZoom = map.getZoom();
+      if (currentZoom && currentZoom > 16) {
+        map.setZoom(16);
+      }
+    });
+
+    return () => {
+      google.maps.event.removeListener(idleListener);
+    };
+  }, [map, isLoaded, activeLocation.lat, activeLocation.lng, binLocations]);
+
+  const cycleProxy = () => {
+    const idx = PROXY_LOCATIONS.findIndex((p) => p.key === proxyKey);
+    const next = PROXY_LOCATIONS[(idx + 1) % PROXY_LOCATIONS.length];
+    setProxyKey(next.key);
   };
-
-  const binLocations: BinLocation[] = [
-    {
-      id: 1,
-      name: "Civic Center Recycling",
-      type: "recycle",
-      address: "1 Dr Carlton B Goodlett Pl, San Francisco, CA",
-      distance: "0.3 mi",
-      position: { lat: 37.7793, lng: -122.4192 }, // SF City Hall area
-    },
-    {
-      id: 2,
-      name: "Mission Community Compost",
-      type: "compost",
-      address: "456 Valencia St, San Francisco, CA",
-      distance: "0.5 mi",
-      position: { lat: 37.7648, lng: -122.4212 }, // Valencia corridor
-    },
-    {
-      id: 3,
-      name: "Public Waste Station",
-      type: "trash",
-      address: "789 Market St, San Francisco, CA",
-      distance: "0.2 mi",
-      position: { lat: 37.7877, lng: -122.4066 }, // Market St area
-    },
-    {
-      id: 4,
-      name: "Golden Gate Recycling Hub",
-      type: "recycle",
-      address: "1234 Fulton St, San Francisco, CA",
-      distance: "1.2 mi",
-      position: { lat: 37.7763, lng: -122.4455 }, // near GG Park east-ish
-    },
-    {
-      id: 5,
-      name: "North Beach Compost",
-      type: "compost",
-      address: "567 Columbus Ave, San Francisco, CA",
-      distance: "0.8 mi",
-      position: { lat: 37.8017, lng: -122.4102 }, // North Beach
-    },
-  ];
-
-  const [cleanupHotspots, setCleanupHotspots] = useState<CleanupHotspot[]>([
-    {
-      id: 1,
-      position: { lat: 37.7599, lng: -122.4262 }, // Dolores Park North
-      itemCount: 23,
-      recentActivity: 8,
-    },
-    {
-      id: 2,
-      position: { lat: 37.7642, lng: -122.4225 }, // Valencia St corridor
-      itemCount: 15,
-      recentActivity: 5,
-    },
-    {
-      id: 3,
-      position: { lat: 37.7791, lng: -122.4193 }, // Civic Center / City Hall
-      itemCount: 31,
-      recentActivity: 12,
-    },
-    {
-      id: 4,
-      position: { lat: 37.7715, lng: -122.4108 }, // SOMA edge
-      itemCount: 19,
-      recentActivity: 6,
-    },
-  ]);
 
   const filteredBins =
     selectedFilter === "all"
@@ -232,6 +218,22 @@ export function Home() {
 
     const markers: google.maps.marker.AdvancedMarkerElement[] = [];
 
+    const userEl = document.createElement("div");
+    userEl.style.width = "24px";
+    userEl.style.height = "24px";
+    userEl.style.borderRadius = "50%";
+    userEl.style.background = "#a855f7";
+    userEl.style.border = "3px solid white";
+    userEl.style.boxShadow = "0 6px 18px rgba(0,0,0,0.25)";
+
+    const userMarker = new google.maps.marker.AdvancedMarkerElement({
+      map,
+      position: activeLocation,
+      content: userEl,
+      zIndex: 1000,
+    });
+    markers.push(userMarker);
+
     const makeBadge = (type: BinType) => {
       const el = document.createElement("div");
       el.style.width = "56px";
@@ -249,8 +251,8 @@ export function Home() {
         type === "recycle"
           ? "#3b82f6"
           : type === "compost"
-            ? "#22c55e"
-            : "#6b7280";
+          ? "#22c55e"
+          : "#6b7280";
 
       el.style.background = bg;
       el.innerHTML = lucideSvg(type, "white");
@@ -270,39 +272,59 @@ export function Home() {
       markers.push(marker);
     });
 
-    // --- Add cleanup hotspot markers ---
-    cleanupHotspots.forEach((hotspot) => {
-      const el = document.createElement("div");
-      el.style.width = "48px";
-      el.style.height = "48px";
-      el.style.borderRadius = "50%";
-      el.style.background = "#f97316"; // orange
-      el.style.display = "flex";
-      el.style.alignItems = "center";
-      el.style.justifyContent = "center";
-      el.style.boxShadow = "0 10px 25px rgba(0,0,0,0.18)";
-      el.style.border = "4px solid white";
-      el.style.fontWeight = "bold";
-      el.style.fontSize = "1rem";
-      el.style.color = "white";
-      el.style.cursor = "pointer";
-      el.innerText = `${hotspot.itemCount}`;
-      // Optionally, add a pulse effect with CSS class or animation
-
-      const marker = new google.maps.marker.AdvancedMarkerElement({
-        map,
-        position: hotspot.position,
-        content: el,
-      });
-      markers.push(marker);
-    });
 
     // Cleanup function to remove all markers from the map
     return () => {
       markers.forEach((m) => (m.map = null));
     };
-  }, [map, isLoaded, filteredBins, cleanupHotspots]);
+  }, [map, isLoaded, filteredBins, activeLocation.lat, activeLocation.lng, cleanupHotspots]);
 
+  useEffect(() => {
+  const controller = new AbortController();
+
+  async function loadNearby() {
+    const lat = activeLocation.lat;
+    const lng = activeLocation.lng;
+
+    const API_BASE = import.meta.env.VITE_API_BASE_URL;
+
+    // ✅ IMPORTANT: fallback so you don't build "undefined/..."
+    const base = API_BASE?.trim() ? API_BASE.trim() : "";
+    const url = `${base}/api/trashcans/nearby?lat=${lat}&lng=${lng}&limit=10&maxDistance=3000`;
+
+    setDebug({ status: "loading", count: 0, url });
+
+    const res = await fetch(url, { signal: controller.signal });
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      setDebug({ status: `error ${res.status}`, count: 0, url });
+      return;
+    }
+
+    const items = (data.items ?? []) as any[];
+    setBinLocations(
+      items.map((x: any) => ({
+        id: String(x.id),
+        name: x.name ?? "Trash Can",
+        type: (x.type ?? "trash") as BinType,
+        address: x.address ?? "",
+        position: x.position,
+        distance: x.distance,
+      })),
+    );
+
+    setDebug({ status: "ok", count: items.length, url });
+  }
+
+  loadNearby().catch((e) => {
+    setDebug({ status: `fetch failed`, count: 0, url: String(e) });
+  });
+
+  return () => controller.abort();
+}, [activeLocation.lat, activeLocation.lng]);
+
+  
   const getBinIconUrl = (type: BinType) => {
     switch (type) {
       case "recycle":
@@ -354,11 +376,11 @@ export function Home() {
         <path d="M20 8a8 8 0 0 1-13.657 5.657L4 12"/>
       `
         : type === "compost"
-          ? `
+        ? `
         <path d="M11 20A7 7 0 0 1 4 13C4 7 11 4 20 4c0 9-3 16-9 16Z"/>
         <path d="M20 4c-6 1-11 6-12 12"/>
       `
-          : `
+        : `
         <path d="M3 6h18"/>
         <path d="M8 6V4h8v2"/>
         <path d="M19 6l-1 14H6L5 6"/>
@@ -381,12 +403,12 @@ export function Home() {
   };
 
   async function testPing() {
-  try {
-    const res = await EcoQuestVision.ping();
-    alert(`Ping OK: ${res.message}`);
-  } catch (e) {
-    alert("Ping FAILED: " + String(e));
-  }
+    try {
+      const res = await EcoQuestVision.ping();
+      alert(`Ping OK: ${res.message}`);
+    } catch (e) {
+      alert("Ping FAILED: " + String(e));
+    }
 }
 
   async function testBackendConnection() {
@@ -498,8 +520,7 @@ export function Home() {
     } finally {
       setIsSubmittingHotspot(false);
     }
-  }
-
+    }
 
   return (
     <div className="w-full h-screen bg-gradient-to-b from-green-50 to-blue-50 overflow-hidden flex flex-col">
@@ -529,7 +550,10 @@ export function Home() {
         </div>
 
         {/* Top bar */}
-        <div className="relative p-3 sm:p-4 z-20 pointer-events-none">
+        <div
+          className="relative p-3 sm:p-4 z-20 pointer-events-none"
+          style={{ paddingTop: topSafeOffset }}
+        >
           <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg p-3 sm:p-4 flex items-center justify-between pointer-events-auto">
             <div>
               <h1 className="text-lg sm:text-xl font-bold text-gray-800">
@@ -553,8 +577,22 @@ export function Home() {
           </div>
         </div>
 
+        <div
+          className="absolute left-3 z-40 pointer-events-none"
+          style={{ top: topOverlayOffset }}
+        >
+  <div className="bg-black/70 text-white text-xs rounded-xl px-3 py-2">
+    <div>Status: {debug.status}</div>
+    <div>Bins: {debug.count}</div>
+  </div>
+</div>
+
+
         {/* Filter buttons - Right side */}
-        <div className="absolute top-20 sm:top-24 right-3 sm:right-4 z-20 space-y-2 pointer-events-none">
+        <div
+          className="absolute right-3 sm:right-4 z-20 space-y-2 pointer-events-none"
+          style={{ top: topOverlayOffset }}
+        >
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
@@ -593,7 +631,9 @@ export function Home() {
           >
             <Recycle
               size={20}
-              className={`sm:w-6 sm:h-6 ${selectedFilter === "recycle" ? "text-white" : "text-blue-600"}`}
+              className={`sm:w-6 sm:h-6 ${
+                selectedFilter === "recycle" ? "text-white" : "text-blue-600"
+              }`}
             />
           </motion.button>
 
@@ -613,7 +653,9 @@ export function Home() {
           >
             <Leaf
               size={20}
-              className={`sm:w-6 sm:h-6 ${selectedFilter === "compost" ? "text-white" : "text-green-600"}`}
+              className={`sm:w-6 sm:h-6 ${
+                selectedFilter === "compost" ? "text-white" : "text-green-600"
+              }`}
             />
           </motion.button>
 
@@ -631,7 +673,9 @@ export function Home() {
           >
             <Trash2
               size={20}
-              className={`sm:w-6 sm:h-6 ${selectedFilter === "trash" ? "text-white" : "text-gray-600"}`}
+              className={`sm:w-6 sm:h-6 ${
+                selectedFilter === "trash" ? "text-white" : "text-gray-600"
+              }`}
             />
           </motion.button>
         </div>
@@ -656,7 +700,8 @@ export function Home() {
               animate={{ x: 0 }}
               exit={{ x: "100%" }}
               transition={{ type: "spring", damping: 25 }}
-              className="absolute top-20 sm:top-24 right-3 sm:right-4 left-3 sm:left-4 bottom-24 z-30 bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+              className="absolute right-3 sm:right-4 left-3 sm:left-4 bottom-24 z-30 bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+              style={{ top: topOverlayOffset }}
             >
               <div className="p-3 sm:p-4 border-b border-gray-200 flex items-center justify-between bg-gradient-to-r from-green-500 to-green-600">
                 <h2 className="text-base sm:text-lg font-bold text-white">
@@ -690,7 +735,9 @@ export function Home() {
                     >
                       <div className="flex items-center gap-3">
                         <div
-                          className={`w-10 h-10 sm:w-12 sm:h-12 ${getBinColor(bin.type)} rounded-xl flex items-center justify-center flex-shrink-0`}
+                          className={`w-10 h-10 sm:w-12 sm:h-12 ${getBinColor(
+                            bin.type,
+                          )} rounded-xl flex items-center justify-center flex-shrink-0`}
                         >
                           <img
                             src={getBinIconUrl(bin.type)}
@@ -714,27 +761,7 @@ export function Home() {
                     </motion.button>
                   );
                 })}
-                {cleanupHotspots.map((hotspot) => (
-            <motion.div
-              key={hotspot.id}
-              initial={{ scale: 0, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ delay: 0.2 }}
-              className="absolute z-10"
-              style={{
-                transform: 'translate(-50%, -50%)',
-              }}
-            >
-              <div className="relative">
-                <div className="w-11 h-11 sm:w-12 sm:h-12 bg-orange-500 rounded-full flex items-center justify-center shadow-lg border-3 border-white animate-pulse">
-                  <span className="text-white font-bold text-xs sm:text-sm">{hotspot.recentActivity}</span>
-                </div>
-                <div className="absolute -top-1 -right-1 w-5 h-5 sm:w-6 sm:h-6 bg-red-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">
-                  {hotspot.itemCount}
-                </div>
-              </div>
-            </motion.div>
-          ))}
+                
               </div>
             </motion.div>
           )}
@@ -752,7 +779,9 @@ export function Home() {
               <div className="bg-white rounded-2xl shadow-2xl p-3 sm:p-4">
                 <div className="flex items-start gap-3">
                   <div
-                    className={`w-12 h-12 sm:w-14 sm:h-14 ${getBinColor(selectedLocation.type)} rounded-xl flex items-center justify-center flex-shrink-0`}
+                    className={`w-12 h-12 sm:w-14 sm:h-14 ${getBinColor(
+                      selectedLocation.type,
+                    )} rounded-xl flex items-center justify-center flex-shrink-0`}
                   >
                     <img
                       src={getBinIconUrl(selectedLocation.type)}
@@ -928,20 +957,6 @@ export function Home() {
           </motion.button>
         </div>
 
-        {/* Scan Button */}
-        <div className="absolute bottom-20 sm:bottom-24 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={() => navigate("/scan")}
-            className="bg-gradient-to-r from-green-500 to-green-600 text-white px-8 sm:px-10 py-4 sm:py-5 rounded-full shadow-2xl flex items-center gap-2 sm:gap-3 font-bold text-base sm:text-lg border-4 border-white pointer-events-auto touch-manipulation"
-          >
-            <Camera size={28} className="sm:w-8 sm:h-8" />
-            Scan Item
-          </motion.button>
-        </div>
-
-// ...existing code...
         {/* Scan Button */}
         <div className="absolute bottom-20 sm:bottom-24 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
           <motion.button

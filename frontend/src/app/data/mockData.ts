@@ -16,14 +16,6 @@ export interface Pet {
   mood: "happy" | "neutral" | "sad";
 }
 
-export interface LeaderboardEntry {
-  rank: number;
-  name: string;
-  points: number;
-  city: string;
-  avatar?: string;
-}
-
 export interface ScanHistory {
   id: string;
   type: ItemType;
@@ -48,26 +40,6 @@ export const mockPet: Pet = {
   stage: 2,
   mood: "happy",
 };
-
-export const mockLeaderboard: LeaderboardEntry[] = [
-  { rank: 1, name: "EcoWarrior", points: 8920, city: "San Francisco" },
-  { rank: 2, name: "GreenHero", points: 7850, city: "San Francisco" },
-  { rank: 3, name: "RecycleKing", points: 6730, city: "Oakland" },
-  { rank: 4, name: "EarthSaver", points: 5890, city: "San Francisco" },
-  { rank: 5, name: "TrashPanda", points: 5120, city: "Berkeley" },
-  { rank: 6, name: "CompostQueen", points: 4890, city: "San Francisco" },
-  { rank: 7, name: "PlasticSlayer", points: 4560, city: "Oakland" },
-  { rank: 8, name: "GreenThumb", points: 4230, city: "San Jose" },
-  { rank: 9, name: "ZeroWaste", points: 3980, city: "San Francisco" },
-  { rank: 10, name: "NatureLover", points: 3850, city: "Berkeley" },
-];
-
-export const mockCityLeaderboard = [
-  { rank: 1, city: "San Francisco", points: 45680, itemsCollected: 2340 },
-  { rank: 2, city: "Oakland", points: 38920, itemsCollected: 1980 },
-  { rank: 3, city: "Berkeley", points: 32150, itemsCollected: 1650 },
-  { rank: 4, city: "San Jose", points: 28760, itemsCollected: 1420 },
-];
 
 export const mockScanHistory: ScanHistory[] = [
   {

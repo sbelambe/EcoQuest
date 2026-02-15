@@ -15,6 +15,7 @@ import { getPointsForItemType } from "../data/mockData";
 
 export function ScanResult() {
   const navigate = useNavigate();
+  const topSafeOffset = "calc(env(safe-area-inset-top, 0px) + 12px)";
   const [itemType, setItemType] = useState<ItemType>("recycle");
   const [showConfetti, setShowConfetti] = useState(false);
 
@@ -80,7 +81,10 @@ const [confidence, setConfidence] = useState<number>(0);
   const Icon = config.icon;
 
   return (
-    <div className="relative h-[100dvh] overflow-y-auto bg-gradient-to-b from-green-50 to-blue-50 p-6 flex flex-col">
+    <div
+      className="relative h-[100dvh] overflow-y-auto bg-gradient-to-b from-green-50 to-blue-50 p-6 flex flex-col"
+      style={{ paddingTop: topSafeOffset }}
+    >
       {/* Confetti effect */}
       {showConfetti && (
         <div className="relative inset-0 pointer-events-none">
