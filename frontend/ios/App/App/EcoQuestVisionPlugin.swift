@@ -5,9 +5,11 @@ import ExecuTorch
 
 @objc(EcoQuestVision)
 public class EcoQuestVisionPlugin: CAPPlugin, CAPBridgedPlugin {
-    
-    private let modelQueue = DispatchQueue(label: "EcoQuestVision.modelQueue")
+
+    private let modelQueue = DispatchQueue(label: "EcoQuestVision.modelQueue", qos: .userInitiated)
+    private var module: Module?
     private var loadError: String?
+    private var loadedModelPath: String?
 
     public let identifier = "EcoQuestVisionPlugin"
     public let jsName = "EcoQuestVision"
@@ -18,42 +20,82 @@ public class EcoQuestVisionPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "infer", returnType: CAPPluginReturnPromise),
     ]
 
-    private var module: Module?
     private let methodName = "forward"
-
-    // Adjust to your model’s expected input size (YOLO often uses 640)
     private let inputSize: Int = 640
 
     @objc func ping(_ call: CAPPluginCall) {
         call.resolve(["ok": true, "message": "pong ✅"])
     }
 
+    /// Loads + preloads the "forward" method ONCE.
     @objc func loadModel(_ call: CAPPluginCall) {
-        do {
-            let modelName = call.getString("modelName") ?? "yolo3"   // yolo.pte by default
-            let modelExt  = call.getString("modelExt") ?? "pte"
+        let modelName = call.getString("modelName") ?? "yolo4"   // change if needed
+        let modelExt  = call.getString("modelExt") ?? "pte"
 
-            guard let path = Bundle.main.path(forResource: modelName, ofType: modelExt) else {
-                call.reject("Model not found in bundle: \(modelName).\(modelExt). Check Copy Bundle Resources.")
-                return
+        modelQueue.async(execute: {   // ✅ avoids DispatchWorkItem overload confusion
+            autoreleasepool {
+                do {
+                    if self.module != nil {
+                        DispatchQueue.main.async {
+                            call.resolve([
+                                "ok": true,
+                                "alreadyLoaded": true,
+                                "path": self.loadedModelPath ?? ""
+                            ])
+                        }
+                        return
+                    }
+
+                    if let err = self.loadError {
+                        DispatchQueue.main.async { call.reject(err) }
+                        return
+                    }
+
+                    guard let bundlePath = Bundle.main.path(forResource: modelName, ofType: modelExt) else {
+                        DispatchQueue.main.async {
+                            call.reject("Model not found in bundle: \(modelName).\(modelExt). Check Copy Bundle Resources.")
+                        }
+                        return
+                    }
+
+                    let dstPath = try Self.copyModelToAppSupportIfNeeded(
+                        srcPath: bundlePath,
+                        fileName: "\(modelName).\(modelExt)"
+                    )
+
+                    self.printFileSize(path: dstPath, prefix: "[EcoQuestVision] PTE bytes:")
+                    print("[EcoQuestVision] Creating Module:", dstPath)
+
+                    let loaded = try Module(filePath: dstPath)
+
+                    print("[EcoQuestVision] Loading method:", self.methodName)
+                    try loaded.load(self.methodName)
+
+                    self.module = loaded
+                    self.loadedModelPath = dstPath
+                    self.loadError = nil
+
+                    print("[EcoQuestVision] Model ready ✅")
+
+                    DispatchQueue.main.async {
+                        call.resolve(["ok": true, "path": dstPath])
+                    }
+                } catch {
+                    self.loadError = "Failed to init/load model: \(error)"
+                    DispatchQueue.main.async { call.reject(self.loadError!) }
+                }
             }
-
-            let m = try Module(filePath: path)
-//            try m.load(methodName) // pre-load forward method :contentReference[oaicite:1]{index=1}
-            self.module = m
-
-            call.resolve(["ok": true, "path": path])
-        } catch {
-            call.reject("Failed to load model: \(error)")
-        }
+        })
     }
 
     @objc func infer(_ call: CAPPluginCall) {
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async(execute: { // ✅ avoids DispatchWorkItem overload confusion
             autoreleasepool {
                 do {
-                    guard let module = self.getOrLoadModule() else {
-                        DispatchQueue.main.async { call.reject(self.loadError ?? "Model failed to load.") }
+                    guard let module = self.module else {
+                        DispatchQueue.main.async {
+                            call.reject(self.loadError ?? "Model not loaded. Call loadModel() first.")
+                        }
                         return
                     }
 
@@ -67,24 +109,40 @@ public class EcoQuestVisionPlugin: CAPPlugin, CAPBridgedPlugin {
                         return
                     }
 
-                    let chw = Self.preprocessToCHWFloat(image: uiImage, size: self.inputSize)
-                    let inputTensor = Tensor(chw, shape: [1, 3, self.inputSize, self.inputSize])
+                    // --- Preprocess (letterbox to 640x640) ---
+                    let chw = Self.letterboxToCHWFloat(image: uiImage, size: self.inputSize)
 
-                    let outValue = try module.forward(inputTensor)
+                    // --- Forward with layout fallback ---
+                    let outputs: [Value]
+                    do {
+                        // Attempt A: NCHW Float [1,3,H,W]
+                        let inputA = Tensor(chw, shape: [1, 3, self.inputSize, self.inputSize])
+                        outputs = try module.forward(inputA)
+                    } catch {
+                        print("[EcoQuestVision] forward() failed with NCHW Float:", error)
 
-                    let outTensor = try Tensor<Float>(outValue)
-                    let outShape = outTensor.shape
-                    let out = outTensor.scalars()
+                        // Attempt B: NHWC Float [1,H,W,3]
+                        let nhwc = Self.chwToNhwc(chw, size: self.inputSize)
+                        let inputB = Tensor(nhwc, shape: [1, self.inputSize, self.inputSize, 3])
+                        outputs = try module.forward(inputB)
+                    }
 
-                    let decoded = Self.decodeBestYoloDetection(output: out, shape: outShape, inputSize: self.inputSize)
+                    print("[EcoQuestVision] forward output count:", outputs.count)
+
+                    // --- Decode output ---
+                    let (decoded, outShape) = try Self.decodeOutputsToBestDetection(
+                        outputs: outputs,
+                        inputSize: self.inputSize
+                    )
+
                     let itemType = Self.mapCocoLabelToWasteType(decoded.label)
-                    
-                        #if DEBUG
-                        print("[EcoQuestVision] Build = DEBUG")
-                        #else
-                        print("[EcoQuestVision] Build = RELEASE")
-                        #endif
 
+                    #if DEBUG
+                    print("[EcoQuestVision] Build = DEBUG")
+                    #else
+                    print("[EcoQuestVision] Build = RELEASE")
+                    #endif
+                    print("[EcoQuestVision] topLabel=\(decoded.label) conf=\(decoded.confidence)")
 
                     DispatchQueue.main.async {
                         call.resolve([
@@ -99,45 +157,32 @@ public class EcoQuestVisionPlugin: CAPPlugin, CAPBridgedPlugin {
                     DispatchQueue.main.async { call.reject("Infer failed: \(error)") }
                 }
             }
-        }
+        })
     }
-    
-    private func getOrLoadModule() -> Module? {
-        return modelQueue.sync {
-            if loadError != nil { return nil }
-            if let m = self.module { return m }
 
-            guard let path = Bundle.main.path(forResource: "yolo3", ofType: "pte") else {
-                loadError = "yolo3.pte not found in bundle (Copy Bundle Resources)."
-                return nil
-            }
+    // MARK: - File helpers
 
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-               let size = attrs[.size] as? NSNumber {
-                print("[EcoQuestVision] PTE bytes:", size)
-            }
-            print("[EcoQuestVision] Creating Module:", path)
-
-            do {
-                let loaded = try Module(filePath: path)
-
-                // ✅ Put this back now that you added linker flags + xnnpack
-                print("[EcoQuestVision] Loading method:", self.methodName)
-                try loaded.load(self.methodName)
-
-                self.module = loaded
-                print("[EcoQuestVision] Model ready ✅")
-                return loaded
-            } catch {
-                loadError = "Model init/load failed: \(error)"
-                return nil
-            }
+    private func printFileSize(path: String, prefix: String) {
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+           let size = attrs[.size] as? NSNumber {
+            print(prefix, size)
         }
     }
 
+    private static func copyModelToAppSupportIfNeeded(srcPath: String, fileName: String) throws -> String {
+        let fm = FileManager.default
+        let appSupport = try fm.url(for: .applicationSupportDirectory,
+                                    in: .userDomainMask,
+                                    appropriateFor: nil,
+                                    create: true)
+        let dstURL = appSupport.appendingPathComponent(fileName)
 
-
+        if !fm.fileExists(atPath: dstURL.path) {
+            try fm.copyItem(atPath: srcPath, toPath: dstURL.path)
+        }
+        return dstURL.path
     }
+}
 
 // MARK: - Helpers
 private extension EcoQuestVisionPlugin {
@@ -146,23 +191,36 @@ private extension EcoQuestVisionPlugin {
     struct Detection { let label: String; let confidence: Float; let box: Box }
 
     static func dataUrlToUIImage(_ dataUrl: String) -> UIImage? {
-        // data:image/jpeg;base64,....
         guard let comma = dataUrl.firstIndex(of: ",") else { return nil }
         let base64 = String(dataUrl[dataUrl.index(after: comma)...])
         guard let data = Data(base64Encoded: base64) else { return nil }
         return UIImage(data: data)
     }
 
-    static func preprocessToCHWFloat(image: UIImage, size: Int) -> [Float] {
-        // Resize to size x size RGB
+    static func letterboxToCHWFloat(image: UIImage, size: Int) -> [Float] {
+        let target = CGSize(width: size, height: size)
+
+        let srcSize = image.size
+        let scale = min(target.width / srcSize.width, target.height / srcSize.height)
+        let newW = srcSize.width * scale
+        let newH = srcSize.height * scale
+
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format)
-        let resized = renderer.image { _ in
-            image.draw(in: CGRect(x: 0, y: 0, width: size, height: size))
+        let renderer = UIGraphicsImageRenderer(size: target, format: format)
+
+        let padded = renderer.image { ctx in
+            UIColor(white: 114.0/255.0, alpha: 1.0).setFill()
+            ctx.fill(CGRect(origin: .zero, size: target))
+
+            let x = (target.width - newW) / 2.0
+            let y = (target.height - newH) / 2.0
+            image.draw(in: CGRect(x: x, y: y, width: newW, height: newH))
         }
 
-        guard let cgImage = resized.cgImage else { return Array(repeating: 0, count: 3*size*size) }
+        guard let cgImage = padded.cgImage else {
+            return Array(repeating: 0, count: 3 * size * size)
+        }
 
         let width = size
         let height = size
@@ -183,9 +241,9 @@ private extension EcoQuestVisionPlugin {
 
         ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-        // Convert RGBA -> CHW float in [0,1]
         var chw = [Float](repeating: 0, count: 3 * width * height)
         let hw = width * height
+
         for i in 0..<hw {
             let base = i * 4
             let r = Float(raw[base + 0]) / 255.0
@@ -193,139 +251,136 @@ private extension EcoQuestVisionPlugin {
             let b = Float(raw[base + 2]) / 255.0
             chw[i] = r
             chw[hw + i] = g
-            chw[2*hw + i] = b
+            chw[2 * hw + i] = b
         }
         return chw
     }
 
-    static func sigmoid(_ x: Float) -> Float {
-        return 1.0 / (1.0 + exp(-x))
+    static func chwToNhwc(_ chw: [Float], size: Int) -> [Float] {
+        let hw = size * size
+        var nhwc = [Float](repeating: 0, count: hw * 3)
+        for i in 0..<hw {
+            let r = chw[i]
+            let g = chw[hw + i]
+            let b = chw[2 * hw + i]
+            let base = i * 3
+            nhwc[base + 0] = r
+            nhwc[base + 1] = g
+            nhwc[base + 2] = b
+        }
+        return nhwc
     }
 
-    // COCO class list is long; for demo we map a few common ones.
-    // You can expand this as you test.
+    // ✅ Decodes first output tensor into your best detection
+    static func decodeOutputsToBestDetection(outputs: [Value], inputSize: Int) throws -> (Detection, [Int]) {
+        guard let first = outputs.first else {
+            throw NSError(domain: "EcoQuestVision", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Model returned 0 outputs"])
+        }
+
+        // This is the only potentially API-dependent line.
+        // If you get "Value has no member tensor", tell me what autocomplete shows for `first.`
+        if let outTensor: Tensor<Float> = first.tensor() {
+            let shape = outTensor.shape
+            print("[EcoQuestVision] Output tensor shape:", shape)
+
+            let scalars = outTensor.scalars()
+            
+            let det = decodeBestYoloDetection(output: scalars, shape: shape, inputSize: inputSize)
+            return (det, shape)
+        }
+
+        print("[EcoQuestVision] First output not Tensor<Float>. outputs =", outputs)
+        throw NSError(domain: "EcoQuestVision", code: -2,
+                      userInfo: [NSLocalizedDescriptionKey: "Unsupported output type (not Tensor<Float>)"])
+    }
+
+    static func sigmoid(_ x: Float) -> Float { 1.0 / (1.0 + exp(-x)) }
+
     static func mapCocoLabelToWasteType(_ label: String) -> String {
         let l = label.lowercased()
 
-        // Compost examples
-        if ["banana", "apple", "orange", "broccoli", "carrot", "sandwich", "pizza"].contains(l) {
-            return "compost"
-        }
+        if l == "unknown" { return "unknown" }
 
-        // Recycle examples
-        if ["bottle", "cup", "wine glass", "can", "book"].contains(l) {
-            return "recycle"
-        }
+        if ["banana","apple","orange","broccoli","carrot","sandwich","pizza"].contains(l) { return "compost" }
+        if ["bottle","cup","wine glass","can","book"].contains(l) { return "recycle" }
 
-        // Default
         return "trash"
     }
 
-    // Minimal “best detection” decoder for common YOLOv8-like outputs.
-    // This is intentionally simple (no full NMS). It finds the highest score box.
+
     static func decodeBestYoloDetection(output: [Float], shape: [Int], inputSize: Int) -> Detection {
-        // If we can’t decode, return a safe fallback
         func fallback() -> Detection {
-            return Detection(label: "unknown", confidence: 0.0, box: Box(x: 0, y: 0, w: 0, h: 0))
+            Detection(label: "unknown", confidence: 0.0, box: Box(x: 0, y: 0, w: 0, h: 0))
         }
 
-        // You must adjust these names for your label set if not COCO.
-        // For YOLO COCO: 80 classes. We’ll just return "class_<id>" unless you add a list.
-        func className(_ id: Int) -> String { return "class_\(id)" }
-
-        // Expect something like:
-        // [1, N, 4+numClasses] OR [1, 4+numClasses, N]
-        guard shape.count == 3 else { return fallback() }
-
-        let b = shape[0]
-        guard b == 1 else { return fallback() }
-
-        let a = shape[1]
-        let c = shape[2]
-
-        // Try to infer which dim is anchors (N) and which is channels (K)
-        // If one dim is 84 (4+80), treat that as channels.
-        let numClassesGuess = 80
-
-        let channelsA = a
-        let channelsC = c
-
-        var N: Int = 0
-        var K: Int = 0
-        var layout: String = ""
-
-        if channelsA == 4 + numClassesGuess {
-            // [1, K, N]
-            K = channelsA
-            N = channelsC
-            layout = "KxN"
-        } else if channelsC == 4 + numClassesGuess {
-            // [1, N, K]
-            N = channelsA
-            K = channelsC
-            layout = "NxK"
-        } else {
-            // Unknown layout; still attempt NxK
-            N = channelsA
-            K = channelsC
-            layout = "NxK?"
+        let coco80 = [
+            "person","bicycle","car","motorcycle","airplane","bus","train","truck","boat",
+            "traffic light","fire hydrant","stop sign","parking meter","bench","bird","cat",
+            "dog","horse","sheep","cow","elephant","bear","zebra","giraffe","backpack",
+            "umbrella","handbag","tie","suitcase","frisbee","skis","snowboard","sports ball",
+            "kite","baseball bat","baseball glove","skateboard","surfboard","tennis racket",
+            "bottle","wine glass","cup","fork","knife","spoon","bowl","banana","apple",
+            "sandwich","orange","broccoli","carrot","hot dog","pizza","donut","cake","chair",
+            "couch","potted plant","bed","dining table","toilet","tv","laptop","mouse","remote",
+            "keyboard","cell phone","microwave","oven","toaster","sink","refrigerator","book",
+            "clock","vase","scissors","teddy bear","hair drier","toothbrush"
+        ]
+        func className(_ id: Int) -> String {
+            if id >= 0 && id < coco80.count { return coco80[id] }
+            return "class_\(id)"
         }
 
-        guard K >= 5 else { return fallback() }
+        // Expect [1, N, 6]
+        guard shape.count == 3, shape[0] == 1, shape[2] == 6 else {
+            print("[EcoQuestVision] Unexpected output shape:", shape)
+            return fallback()
+        }
+
+        let N = shape[1]
+        let stride = 6
+        guard output.count >= N * stride else { return fallback() }
 
         var bestScore: Float = 0
-        var bestClass: Int = -1
+        var bestClassId: Int = -1
         var bestBox = Box(x: 0, y: 0, w: 0, h: 0)
 
-        // Helper to read element
-        func get(_ n: Int, _ k: Int) -> Float {
-            // n in [0,N), k in [0,K)
-            switch layout {
-            case "KxN":
-                // index = k*N + n
-                return output[k * N + n]
-            default:
-                // NxK
-                // index = n*K + k
-                return output[n * K + k]
+        for i in 0..<N {
+            let base = i * stride
+
+            let x1 = output[base + 0]
+            let y1 = output[base + 1]
+            let x2 = output[base + 2]
+            let y2 = output[base + 3]
+            let score = output[base + 4]
+            let clsF = output[base + 5]
+
+            // class id is typically an integer stored in float
+            let cls = Int(clsF.rounded())
+
+            if score > bestScore {
+                bestScore = score
+                bestClassId = cls
+
+                // Interpret as xyxy in input pixels; normalize to 0..1
+                let w = max(0, x2 - x1)
+                let h = max(0, y2 - y1)
+                bestBox = Box(
+                    x: x1 / Float(inputSize),
+                    y: y1 / Float(inputSize),
+                    w: w / Float(inputSize),
+                    h: h / Float(inputSize)
+                )
             }
         }
 
-        // YOLO-style: first 4 = (cx, cy, w, h) in input pixels (often),
-        // then class logits/scores. Some exports already have sigmoid applied, some not.
-        // We’ll apply sigmoid to class scores to be safe.
-        for n in 0..<N {
-            let cx = get(n, 0)
-            let cy = get(n, 1)
-            let w  = get(n, 2)
-            let h  = get(n, 3)
-
-            // Find best class for this anchor
-            var localBest: Float = 0
-            var localCls: Int = -1
-            for cls in 0..<min(numClassesGuess, K - 4) {
-                let score = sigmoid(get(n, 4 + cls))
-                if score > localBest {
-                    localBest = score
-                    localCls = cls
-                }
-            }
-
-            if localBest > bestScore {
-                bestScore = localBest
-                bestClass = localCls
-
-                // Convert center->top-left, normalize to 0..1
-                let x = (cx - w/2) / Float(inputSize)
-                let y = (cy - h/2) / Float(inputSize)
-                let nw = w / Float(inputSize)
-                let nh = h / Float(inputSize)
-
-                bestBox = Box(x: x, y: y, w: nw, h: nh)
-            }
+        let minConf: Float = 0.30
+        if bestScore < minConf || bestClassId < 0 {
+            return fallback()
         }
 
-        if bestClass < 0 { return fallback() }
-        return Detection(label: className(bestClass), confidence: bestScore, box: bestBox)
+        return Detection(label: className(bestClassId), confidence: bestScore, box: bestBox)
     }
+
 }
+
