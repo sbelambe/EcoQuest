@@ -40,10 +40,24 @@ interface BinLocation {
 }
 
 interface CleanupHotspot {
-  id: number;
+  id: number | string;
   position: LatLng;
   itemCount: number;
   recentActivity: number;
+}
+
+type TrashReportResponse = {
+  _id: string;
+  location?: {
+    coordinates?: [number, number];
+  };
+  severity?: number;
+};
+
+const BACKEND_URL_STORAGE_KEY = "ecoquest_backend_url";
+
+function normalizeBaseUrl(url: string): string {
+  return url.trim().replace(/\/+$/, "");
 }
 
 const LUCIDE_PATHS: Record<BinType, string[]> = {
@@ -108,6 +122,13 @@ export function Home() {
   const [selectedLocation, setSelectedLocation] = useState<BinLocation | null>(
     null,
   );
+  const [showHotspotForm, setShowHotspotForm] = useState(false);
+  const [isSubmittingHotspot, setIsSubmittingHotspot] = useState(false);
+  const [hotspotSeverity, setHotspotSeverity] = useState(3);
+  const [hotspotDescription, setHotspotDescription] = useState("");
+  const [hotspotImageDataUrl, setHotspotImageDataUrl] = useState("");
+  const [hotspotImageName, setHotspotImageName] = useState("");
+  const [hotspotError, setHotspotError] = useState<string | null>(null);
 
   const [useProxy, setUseProxy] = useState(true);
   const [proxyKey, setProxyKey] =
@@ -183,6 +204,13 @@ export function Home() {
       ? binLocations
       : binLocations.filter((bin) => bin.type === selectedFilter);
 
+  useEffect(() => {
+    window.localStorage.setItem(
+      BACKEND_URL_STORAGE_KEY,
+      normalizeBaseUrl(backendBaseUrl),
+    );
+  }, [backendBaseUrl]);
+
   // ...existing code...
 
   useEffect(() => {
@@ -249,7 +277,7 @@ export function Home() {
     return () => {
       markers.forEach((m) => (m.map = null));
     };
-  }, [map, isLoaded, filteredBins, activeLocation.lat, activeLocation.lng]);
+  }, [map, isLoaded, filteredBins, activeLocation.lat, activeLocation.lng, cleanupHotspots]);
 
   useEffect(() => {
   const controller = new AbortController();
@@ -381,7 +409,118 @@ export function Home() {
     } catch (e) {
       alert("Ping FAILED: " + String(e));
     }
+}
+
+  async function testBackendConnection() {
+    const endpoint = `${normalizeBaseUrl(backendBaseUrl)}/health`;
+    try {
+      const res = await fetch(endpoint);
+      const text = await res.text();
+      alert(`Backend check: ${res.status}\n${endpoint}\n${text}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      alert(`Backend check failed: ${msg}\n${endpoint}`);
+    }
   }
+
+  function openHotspotForm() {
+    setHotspotError(null);
+    setShowHotspotForm(true);
+  }
+
+  function closeHotspotForm() {
+    if (isSubmittingHotspot) return;
+    setShowHotspotForm(false);
+    setHotspotError(null);
+  }
+
+  async function onHotspotImageChange(
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) {
+    const file = e.target.files?.[0];
+    if (!file) {
+      setHotspotImageDataUrl("");
+      setHotspotImageName("");
+      return;
+    }
+
+    setHotspotImageName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      setHotspotImageDataUrl(String(reader.result ?? ""));
+    };
+    reader.onerror = () => {
+      setHotspotImageDataUrl("");
+      setHotspotImageName("");
+      setHotspotError("Could not read selected image.");
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function submitHotspotReport(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setHotspotError(null);
+
+    if (!hotspotDescription.trim()) {
+      setHotspotError("Description is required.");
+      return;
+    }
+
+    if (!Number.isFinite(hotspotSeverity) || hotspotSeverity < 1 || hotspotSeverity > 5) {
+      setHotspotError("Severity must be a number between 1 and 5.");
+      return;
+    }
+
+    setIsSubmittingHotspot(true);
+    try {
+      const resolvedBackendBaseUrl = normalizeBaseUrl(backendBaseUrl);
+      const payload = {
+        severity: hotspotSeverity,
+        description: hotspotDescription.trim(),
+        ...(hotspotImageDataUrl ? { imageUrl: hotspotImageDataUrl } : {}),
+        location: {
+          type: "Point",
+          coordinates: [reportLocation.lng, reportLocation.lat] as [number, number],
+        },
+      };
+
+      const endpoint = `${resolvedBackendBaseUrl}/api/trash-reports`;
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Request failed (${res.status}) ${text}`);
+      }
+
+      const created = (await res.json()) as TrashReportResponse;
+      setCleanupHotspots((prev) => [
+        ...prev,
+        {
+          id: created._id ?? Date.now(),
+          position: { lat: reportLocation.lat, lng: reportLocation.lng },
+          itemCount: created.severity ?? hotspotSeverity,
+          recentActivity: 1,
+        },
+      ]);
+
+      setShowHotspotForm(false);
+      setHotspotSeverity(3);
+      setHotspotDescription("");
+      setHotspotImageDataUrl("");
+      setHotspotImageName("");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setHotspotError(
+        `Failed to report hotspot: ${msg}. URL: ${backendBaseUrl}/api/trash-reports`,
+      );
+    } finally {
+      setIsSubmittingHotspot(false);
+    }
+    }
 
   return (
     <div className="w-full h-screen bg-gradient-to-b from-green-50 to-blue-50 overflow-hidden flex flex-col">
@@ -541,6 +680,18 @@ export function Home() {
           </motion.button>
         </div>
 
+        {/* Report Hotspot Button - Top left */}
+        <div className="absolute top-20 sm:top-24 left-3 sm:left-4 z-20 pointer-events-none">
+          <motion.button
+            whileHover={{ scale: 1.04 }}
+            whileTap={{ scale: 0.96 }}
+            onClick={openHotspotForm}
+            className="bg-orange-500 text-white px-4 sm:px-5 py-2.5 rounded-2xl shadow-lg font-semibold pointer-events-auto touch-manipulation"
+          >
+            Report Hotspot
+          </motion.button>
+        </div>
+
         {/* Location list panel */}
         <AnimatePresence>
           {showLocationList && (
@@ -669,6 +820,131 @@ export function Home() {
           )}
         </AnimatePresence>
 
+        {/* Report Hotspot Form */}
+        <AnimatePresence>
+          {showHotspotForm && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 z-40 bg-black/40 backdrop-blur-[2px] p-3 sm:p-4 flex items-end sm:items-center justify-center"
+            >
+              <motion.form
+                initial={{ y: 50, opacity: 0, scale: 0.98 }}
+                animate={{ y: 0, opacity: 1, scale: 1 }}
+                exit={{ y: 40, opacity: 0, scale: 0.98 }}
+                transition={{ type: "spring", damping: 24, stiffness: 260 }}
+                onSubmit={submitHotspotReport}
+                className="w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden"
+              >
+                <div className="bg-gradient-to-r from-orange-500 to-red-500 p-4 sm:p-5 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-white font-bold text-lg sm:text-xl">Report Hotspot</h2>
+                    <p className="text-white/90 text-xs sm:text-sm">Submit details in one form</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeHotspotForm}
+                    className="w-9 h-9 bg-white/20 rounded-full flex items-center justify-center"
+                  >
+                    <X size={18} className="text-white" />
+                  </button>
+                </div>
+
+                <div className="p-4 sm:p-5 space-y-4 max-h-[68vh] overflow-y-auto">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Backend URL</label>
+                    <div className="flex gap-2">
+                      <input
+                        value={backendBaseUrl}
+                        onChange={(e) => setBackendBaseUrl(e.target.value)}
+                        className="flex-1 rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
+                        placeholder="https://your-tunnel.ngrok-free.dev"
+                      />
+                      <button
+                        type="button"
+                        onClick={testBackendConnection}
+                        className="px-3 py-2 rounded-xl bg-slate-700 text-white text-sm font-semibold"
+                      >
+                        Test
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Severity (1-5)</label>
+                    <input
+                      type="range"
+                      min={1}
+                      max={5}
+                      step={1}
+                      value={hotspotSeverity}
+                      onChange={(e) => setHotspotSeverity(Number(e.target.value))}
+                      className="w-full accent-orange-500"
+                    />
+                    <div className="text-sm font-bold text-orange-600 mt-1">Level {hotspotSeverity}</div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Description</label>
+                    <textarea
+                      value={hotspotDescription}
+                      onChange={(e) => setHotspotDescription(e.target.value)}
+                      rows={4}
+                      className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
+                      placeholder="Example: Huge pile of boxes and litter near the curb."
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Optional Image</label>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={onHotspotImageChange}
+                      className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-orange-100 file:px-3 file:py-1.5 file:text-orange-700"
+                    />
+                    {hotspotImageName && (
+                      <p className="text-xs text-gray-500 mt-1 truncate">{hotspotImageName}</p>
+                    )}
+                    {hotspotImageDataUrl && (
+                      <img
+                        src={hotspotImageDataUrl}
+                        alt="Selected hotspot"
+                        className="mt-2 w-full h-32 object-cover rounded-xl border border-gray-200"
+                      />
+                    )}
+                  </div>
+
+                  <div className="rounded-xl bg-gray-50 border border-gray-200 p-3">
+                    <p className="text-xs text-gray-600">Location (fixed for demo)</p>
+                    <p className="text-sm font-semibold text-gray-800">
+                      lat: {reportLocation.lat}, lng: {reportLocation.lng}
+                    </p>
+                  </div>
+
+                  {hotspotError && (
+                    <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-sm text-red-700">
+                      {hotspotError}
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 sm:p-5 border-t border-gray-200">
+                  <button
+                    type="submit"
+                    disabled={isSubmittingHotspot}
+                    className="w-full bg-gradient-to-r from-orange-500 to-red-500 text-white py-3 rounded-xl font-bold shadow-lg disabled:opacity-60"
+                  >
+                    {isSubmittingHotspot ? "Submitting..." : "Submit Report"}
+                  </button>
+                </div>
+              </motion.form>
+            </motion.div>
+          )}
+        </AnimatePresence>
+// ...existing code...
+
         {/* Test Ping Button - bottom center above Scan */}
         <div className="absolute bottom-36 sm:bottom-40 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
           <motion.button
@@ -699,7 +975,7 @@ export function Home() {
           <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg p-2 sm:p-3 space-y-2 pointer-events-auto">
             <div className="flex items-center gap-2">
               <div className="w-5 h-5 sm:w-6 sm:h-6 bg-orange-500 rounded-full flex items-center justify-center">
-                <span className="text-white text-xs font-bold">5</span>
+                <span className="text-white text-xs font-bold">{cleanupHotspots.length}</span>
               </div>
               <span className="text-xs text-gray-700 font-medium">
                 Hotspots
