@@ -3,35 +3,30 @@ import { useNavigate } from "react-router";
 import { motion } from "motion/react";
 import { Camera as CameraIcon, X } from "lucide-react";
 import { Camera, CameraResultType, CameraSource } from "@capacitor/camera";
-import { dataUrlToBlob } from "../utils/upload";
 import type { ItemType } from "../data/mockData";
 import { EcoQuestVision } from "../plugins/ecoQuestVision";
 
+// import { dataUrlToBlob } from "../utils/upload";
 
 type InferResponse = {
-  itemType: ItemType; // "trash" | "recycle" | "compost"
+  itemType: ItemType;
   topLabel: string | null;
   confidence: number;
-  detections: { label: string; confidence: number }[];
+  detections?: { label: string; confidence: number }[];
   note?: string;
 };
 
-async function inferWasteType(mlApiUrl: string, scanImageDataUrl: string) {
-  const blob = dataUrlToBlob(scanImageDataUrl);
-  const form = new FormData();
-  form.append("file", blob, "scan.jpg");
+// ---- Model init: load once per app session ----
+let visionInitPromise: Promise<any> | null = null;
 
-  const res = await fetch(`${mlApiUrl}/infer`, {
-    method: "POST",
-    body: form,
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Infer failed: ${res.status} ${text}`);
+export function initVision() {
+  if (!visionInitPromise) {
+    visionInitPromise = EcoQuestVision.loadModel({
+      modelName: "yolo4", // must match bundled filename (without .pte)
+      modelExt: "pte",
+    });
   }
-
-  return (await res.json()) as InferResponse;
+  return visionInitPromise;
 }
 
 export function Scan() {
@@ -39,15 +34,21 @@ export function Scan() {
   const [isScanning, setIsScanning] = useState(false);
   const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-const startedRef = useRef(false);
-  // const ML_API_URL = import.meta.env.VITE_ML_API_URL as string | undefined;
+
+  const startedRef = useRef(false);
+  const scanningRef = useRef(false); // prevents double-calls even if state lags
 
   async function captureFromCamera() {
-    if (isScanning) return;
+    if (scanningRef.current) return;
+    scanningRef.current = true;
+
     setIsScanning(true);
     setErrorMsg(null);
 
     try {
+      // Ensure model is loaded (safe to call repeatedly due to cached promise)
+      await initVision();
+
       const perm = await Camera.requestPermissions({ permissions: ["camera"] });
       if (perm.camera !== "granted") {
         throw new Error("Camera permission not granted.");
@@ -56,7 +57,7 @@ const startedRef = useRef(false);
       const photo = await Camera.getPhoto({
         quality: 85,
         allowEditing: false,
-        resultType: CameraResultType.DataUrl, // easiest for now
+        resultType: CameraResultType.DataUrl,
         source: CameraSource.Camera,
       });
 
@@ -64,29 +65,20 @@ const startedRef = useRef(false);
       if (!dataUrl) throw new Error("No image data returned from camera.");
 
       setPreviewDataUrl(dataUrl);
-
-      // Save image for ScanResult preview
       sessionStorage.setItem("lastScanImage", dataUrl);
 
-      // if (!ML_API_URL) {
-      //   throw new Error(
-      //     "Missing VITE_ML_API_URL. Set it to your ngrok https URL."
-      //   );
-      // }
-      // Call model
-      // const result = await inferWasteType(ML_API_URL, dataUrl);
+      // Native ExecuTorch inference
+      const result = (await EcoQuestVision.infer({ dataUrl })) as InferResponse;
 
-      const result = await EcoQuestVision.infer({ dataUrl });
-
-      // Store model outputs for ScanResult
       sessionStorage.setItem("lastScanType", result.itemType);
       sessionStorage.setItem("lastScanLabel", result.topLabel ?? "");
-      sessionStorage.setItem("lastScanConfidence", String(result.confidence));
+      sessionStorage.setItem("lastScanConfidence", String(result.confidence ?? 0));
 
       navigate("/scan-result");
     } catch (e: any) {
-      const msg = (e?.message ?? "").toLowerCase();
+      const msg = String(e?.message ?? "").toLowerCase();
       const canceled = msg.includes("cancel") || msg.includes("user cancelled");
+
       if (canceled) {
         navigate("/");
         return;
@@ -96,13 +88,15 @@ const startedRef = useRef(false);
       setErrorMsg(e?.message ?? "Unknown error");
     } finally {
       setIsScanning(false);
+      scanningRef.current = false;
     }
   }
 
   useEffect(() => {
     if (startedRef.current) return;
-  startedRef.current = true;
-    // auto-open camera on mount
+    startedRef.current = true;
+
+    // Auto-open camera on mount
     captureFromCamera();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
