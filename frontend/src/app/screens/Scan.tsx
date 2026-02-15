@@ -31,6 +31,7 @@ export function initVision() {
 
 export function Scan() {
   const navigate = useNavigate();
+  const topSafeOffset = "calc(env(safe-area-inset-top, 0px) + 8px)";
   const [isScanning, setIsScanning] = useState(false);
   const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -104,7 +105,10 @@ export function Scan() {
   return (
     <div className="relative h-[100dvh] bg-black overflow-hidden flex flex-col">
       {/* Top bar */}
-      <div className="p-4 flex items-center justify-between">
+      <div
+        className="p-4 flex items-center justify-between"
+        style={{ paddingTop: topSafeOffset }}
+      >
         <button
           onClick={() => navigate("/")}
           className="text-white/80 hover:text-white"
