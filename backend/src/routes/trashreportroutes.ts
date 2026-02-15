@@ -41,10 +41,11 @@ router.post("/", async (req, res) => {
 
   } catch (error) {
     // This is where you'll see why MongoDB failed (e.g., missing required fields)
-    console.error("❌ Fatal Error in Trash Report Route:", error.message);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("❌ Fatal Error in Trash Report Route:", message);
     res.status(500).json({ 
       error: "Failed to create report", 
-      details: error.message 
+      details: message 
     });
   }
 });
