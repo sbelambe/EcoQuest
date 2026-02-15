@@ -14,6 +14,13 @@ import {
 import { BottomNav } from "../components/BottomNav";
 import { mockUserStats } from "../data/mockData";
 import { GoogleMap, Marker, useLoadScript } from "@react-google-maps/api";
+import { registerPlugin } from "@capacitor/core";
+
+const EcoQuestVision = registerPlugin<{
+  ping: () => Promise<{ ok: boolean; message: string }>;
+  scan: (options: { imageBase64: string }) => Promise<{ binType: string; confidence: number; label: string }>;
+}>("EcoQuestVision");
+
 
 type BinType = "recycle" | "compost" | "trash";
 
@@ -338,11 +345,22 @@ export function Home() {
   `;
   };
 
+  async function testPing() {
+  try {
+    const res = await EcoQuestVision.ping();
+    alert(`Ping OK: ${res.message}`);
+  } catch (e) {
+    alert("Ping FAILED: " + String(e));
+  }
+}
+
+
   return (
     <div className="w-full h-screen bg-gradient-to-b from-green-50 to-blue-50 overflow-hidden flex flex-col">
       {/* Container with max width for desktop */}
       <div className="relative w-full h-full flex-1 flex flex-col">
         {/* Full screen map */}
+
         <div className="absolute inset-0 z-0">
           {!isLoaded ? (
             <div className="w-full h-full bg-gray-100" />
@@ -614,7 +632,34 @@ export function Home() {
             </motion.div>
           )}
         </AnimatePresence>
+// ...existing code...
 
+        {/* Test Ping Button - bottom center above Scan */}
+        <div className="absolute bottom-36 sm:bottom-40 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={testPing}
+            className="bg-black text-white px-5 py-2 rounded-full shadow-lg font-semibold pointer-events-auto touch-manipulation"
+          >
+            Test Ping
+          </motion.button>
+        </div>
+
+        {/* Scan Button */}
+        <div className="absolute bottom-20 sm:bottom-24 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => navigate("/scan")}
+            className="bg-gradient-to-r from-green-500 to-green-600 text-white px-8 sm:px-10 py-4 sm:py-5 rounded-full shadow-2xl flex items-center gap-2 sm:gap-3 font-bold text-base sm:text-lg border-4 border-white pointer-events-auto touch-manipulation"
+          >
+            <Camera size={28} className="sm:w-8 sm:h-8" />
+            Scan Item
+          </motion.button>
+        </div>
+
+// ...existing code...
         {/* Scan Button */}
         <div className="absolute bottom-20 sm:bottom-24 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
           <motion.button

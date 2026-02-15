@@ -1,153 +1,171 @@
-import { useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";
-import { Camera, X, Zap, Image as ImageIcon } from "lucide-react";
+import { Camera as CameraIcon, X } from "lucide-react";
+import { Camera, CameraResultType, CameraSource } from "@capacitor/camera";
+import { dataUrlToBlob } from "../utils/upload";
 import type { ItemType } from "../data/mockData";
+import { EcoQuestVision } from "../plugins/ecoQuestVision";
+
+
+type InferResponse = {
+  itemType: ItemType; // "trash" | "recycle" | "compost"
+  topLabel: string | null;
+  confidence: number;
+  detections: { label: string; confidence: number }[];
+  note?: string;
+};
+
+async function inferWasteType(mlApiUrl: string, scanImageDataUrl: string) {
+  const blob = dataUrlToBlob(scanImageDataUrl);
+  const form = new FormData();
+  form.append("file", blob, "scan.jpg");
+
+  const res = await fetch(`${mlApiUrl}/infer`, {
+    method: "POST",
+    body: form,
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Infer failed: ${res.status} ${text}`);
+  }
+
+  return (await res.json()) as InferResponse;
+}
 
 export function Scan() {
   const navigate = useNavigate();
   const [isScanning, setIsScanning] = useState(false);
+  const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+const startedRef = useRef(false);
+  // const ML_API_URL = import.meta.env.VITE_ML_API_URL as string | undefined;
 
-  const handleCapture = () => {
+  async function captureFromCamera() {
+    if (isScanning) return;
     setIsScanning(true);
+    setErrorMsg(null);
 
-    // Simulate AI detection
-    setTimeout(() => {
-      // Randomly select item type for demo
-      const types: ItemType[] = ["trash", "recycle", "compost"];
-      const randomType = types[Math.floor(Math.random() * types.length)];
-      
-      // Store in sessionStorage for the result screen
-      sessionStorage.setItem("lastScanType", randomType);
+    try {
+      const perm = await Camera.requestPermissions({ permissions: ["camera"] });
+      if (perm.camera !== "granted") {
+        throw new Error("Camera permission not granted.");
+      }
+
+      const photo = await Camera.getPhoto({
+        quality: 85,
+        allowEditing: false,
+        resultType: CameraResultType.DataUrl, // easiest for now
+        source: CameraSource.Camera,
+      });
+
+      const dataUrl = photo.dataUrl ?? null;
+      if (!dataUrl) throw new Error("No image data returned from camera.");
+
+      setPreviewDataUrl(dataUrl);
+
+      // Save image for ScanResult preview
+      sessionStorage.setItem("lastScanImage", dataUrl);
+
+      // if (!ML_API_URL) {
+      //   throw new Error(
+      //     "Missing VITE_ML_API_URL. Set it to your ngrok https URL."
+      //   );
+      // }
+      // Call model
+      // const result = await inferWasteType(ML_API_URL, dataUrl);
+
+      const result = await EcoQuestVision.infer({ dataUrl });
+
+      // Store model outputs for ScanResult
+      sessionStorage.setItem("lastScanType", result.itemType);
+      sessionStorage.setItem("lastScanLabel", result.topLabel ?? "");
+      sessionStorage.setItem("lastScanConfidence", String(result.confidence));
+
       navigate("/scan-result");
-    }, 2000);
-  };
+    } catch (e: any) {
+      const msg = (e?.message ?? "").toLowerCase();
+      const canceled = msg.includes("cancel") || msg.includes("user cancelled");
+      if (canceled) {
+        navigate("/");
+        return;
+      }
+
+      console.error(e);
+      setErrorMsg(e?.message ?? "Unknown error");
+    } finally {
+      setIsScanning(false);
+    }
+  }
+
+  useEffect(() => {
+    if (startedRef.current) return;
+  startedRef.current = true;
+    // auto-open camera on mount
+    captureFromCamera();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
-    <div className="min-h-screen bg-black relative overflow-hidden">
-      {/* Camera viewfinder simulation */}
-      <div className="absolute inset-0 bg-gradient-to-br from-gray-900 to-gray-800">
-        {/* Grid overlay */}
-        <div className="absolute inset-0 grid grid-cols-3 grid-rows-3">
-          {[...Array(9)].map((_, i) => (
-            <div key={i} className="border border-white/10" />
-          ))}
-        </div>
+    <div className="relative h-[100dvh] bg-black overflow-hidden flex flex-col">
+      {/* Top bar */}
+      <div className="p-4 flex items-center justify-between">
+        <button
+          onClick={() => navigate("/")}
+          className="text-white/80 hover:text-white"
+          aria-label="Cancel scan"
+        >
+          <X size={22} />
+        </button>
+        <div className="text-white font-semibold">Scan Item</div>
+        <div className="w-[22px]" />
+      </div>
 
-        {/* Center focus area */}
-        <div className="absolute inset-0 flex items-center justify-center">
-          <motion.div
-            animate={{
-              scale: [1, 1.1, 1],
-              opacity: [0.5, 1, 0.5],
-            }}
-            transition={{
-              duration: 2,
-              repeat: Infinity,
-              ease: "easeInOut",
-            }}
-            className="w-64 h-64 border-4 border-green-500 rounded-3xl relative"
-          >
-            {/* Corner markers */}
-            <div className="absolute -top-1 -left-1 w-8 h-8 border-t-4 border-l-4 border-green-400 rounded-tl-lg" />
-            <div className="absolute -top-1 -right-1 w-8 h-8 border-t-4 border-r-4 border-green-400 rounded-tr-lg" />
-            <div className="absolute -bottom-1 -left-1 w-8 h-8 border-b-4 border-l-4 border-green-400 rounded-bl-lg" />
-            <div className="absolute -bottom-1 -right-1 w-8 h-8 border-b-4 border-r-4 border-green-400 rounded-bl-lg" />
-          </motion.div>
-        </div>
-
-        {/* Scanning overlay */}
-        {isScanning && (
-          <motion.div
-            initial={{ y: -100 }}
-            animate={{ y: "100vh" }}
-            transition={{ duration: 2, ease: "linear" }}
-            className="absolute left-0 right-0 h-1 bg-gradient-to-r from-transparent via-green-400 to-transparent"
-          />
+      {/* Preview / viewfinder */}
+      <div className="flex-1 flex items-center justify-center px-6">
+        {previewDataUrl ? (
+          <div className="w-full max-w-md rounded-2xl overflow-hidden bg-gray-900">
+            <img
+              src={previewDataUrl}
+              alt="Captured preview"
+              className="w-full h-[60vh] object-cover"
+            />
+          </div>
+        ) : (
+          <div className="w-full max-w-md aspect-[3/4] rounded-2xl border border-white/20 flex flex-col items-center justify-center">
+            <CameraIcon className="text-white/70" size={44} />
+            <div className="text-white/70 mt-3">Opening camera…</div>
+          </div>
         )}
       </div>
 
-      {/* Top bar */}
-      <div className="absolute top-0 left-0 right-0 p-6 flex justify-between items-center z-10">
-        <button
-          onClick={() => navigate("/")}
-          className="w-12 h-12 bg-black/50 backdrop-blur-sm rounded-full flex items-center justify-center text-white"
-        >
-          <X size={24} />
-        </button>
-        <div className="bg-black/50 backdrop-blur-sm px-4 py-2 rounded-full text-white text-sm flex items-center gap-2">
-          <Zap size={16} className="text-yellow-400" />
-          AI Detection Active
-        </div>
-      </div>
-
-      {/* Instructions */}
-      <div className="absolute top-24 left-0 right-0 px-6 z-10">
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-black/70 backdrop-blur-md text-white p-4 rounded-2xl text-center"
-        >
-          <p className="font-medium">Position item in the frame</p>
-          <p className="text-sm text-gray-300 mt-1">Our AI will detect trash, recycle, or compost</p>
-        </motion.div>
-      </div>
-
-      {/* Bottom controls */}
-      <div className="absolute bottom-0 left-0 right-0 p-6 pb-12 z-10">
-        <div className="flex items-center justify-center gap-8">
-          {/* Gallery button */}
-          <button className="w-12 h-12 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center text-white">
-            <ImageIcon size={24} />
-          </button>
-
-          {/* Capture button */}
-          <motion.button
-            whileTap={{ scale: 0.9 }}
-            onClick={handleCapture}
-            disabled={isScanning}
-            className="relative"
-          >
-            <div className="w-20 h-20 rounded-full border-4 border-white flex items-center justify-center bg-transparent">
-              <motion.div
-                animate={
-                  isScanning
-                    ? {
-                        scale: [1, 1.2, 1],
-                        backgroundColor: ["#22c55e", "#16a34a", "#22c55e"],
-                      }
-                    : {}
-                }
-                transition={{ duration: 1, repeat: isScanning ? Infinity : 0 }}
-                className="w-16 h-16 rounded-full bg-white"
-              />
-            </div>
-            {isScanning && (
-              <motion.div
-                animate={{ rotate: 360 }}
-                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                className="absolute inset-0 flex items-center justify-center"
-              >
-                <Camera size={32} className="text-white" />
-              </motion.div>
-            )}
-          </motion.button>
-
-          {/* Flash button */}
-          <button className="w-12 h-12 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center text-white">
-            <Zap size={24} />
-          </button>
-        </div>
-
+      {/* Status */}
+      <div className="pb-8 px-6">
         {isScanning && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="mt-4 text-center"
+            className="text-center"
           >
-            <div className="text-white font-medium">Analyzing...</div>
-            <div className="text-green-400 text-sm mt-1">Using AI to detect item type</div>
+            <div className="text-white font-medium">Analyzing…</div>
+            <div className="text-green-400 text-sm mt-1">
+              Using AI to detect item type
+            </div>
           </motion.div>
+        )}
+
+        {errorMsg && (
+          <div className="mt-4 bg-red-500/20 border border-red-400/30 text-red-100 rounded-xl p-4">
+            <div className="font-semibold">Scan failed</div>
+            <div className="text-sm mt-1">{errorMsg}</div>
+            <button
+              onClick={captureFromCamera}
+              className="mt-3 w-full bg-red-500 text-white py-3 rounded-xl font-medium"
+            >
+              Try Again
+            </button>
+          </div>
         )}
       </div>
     </div>

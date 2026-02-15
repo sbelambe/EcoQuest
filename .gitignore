@@ -4,5 +4,11 @@
 /frontend/dist
 /.env
 /frontend/.env
+/frontend/capacitor-plugins/ecoquest-vision/dist
+/frontend/capacitor-plugins/ecoquest-vision/node_modules
+/frontend/ios/App/.DS_Store
 
 /frontend/guidelines/
+/backend/executorch/
+/backend/ml/__pycache__/
+/backend/ml/.venv/
