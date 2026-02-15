@@ -8,20 +8,12 @@ import {
   Recycle,
   Leaf,
   Trash2,
-  ChevronRight,
   X,
 } from "lucide-react";
 import { BottomNav } from "../components/BottomNav";
 import { mockUserStats } from "../data/mockData";
+import { getStoredPoints } from "../data/points";
 import { GoogleMap, useLoadScript } from "@react-google-maps/api";
-import { registerPlugin } from "@capacitor/core";
-
-const EcoQuestVision = registerPlugin<{
-  ping: () => Promise<{ ok: boolean; message: string }>;
-  scan: (options: {
-    imageBase64: string;
-  }) => Promise<{ binType: string; confidence: number; label: string }>;
-}>("EcoQuestVision");
 
 type BinType = "recycle" | "compost" | "trash";
 
@@ -116,12 +108,13 @@ const PROXY_LOCATIONS = [
 
 export function Home() {
   const navigate = useNavigate();
+  const [points, setPoints] = useState(() => getStoredPoints(mockUserStats.points));
   const [selectedFilter, setSelectedFilter] = useState<BinType | "all">("all");
   const [map, setMap] = useState<google.maps.Map | null>(null);
-  const [showLocationList, setShowLocationList] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<BinLocation | null>(
     null,
   );
+  const [showNearbyTrash, setShowNearbyTrash] = useState(false);
   const [showHotspotForm, setShowHotspotForm] = useState(false);
   const [isSubmittingHotspot, setIsSubmittingHotspot] = useState(false);
   const [hotspotSeverity, setHotspotSeverity] = useState(3);
@@ -129,46 +122,68 @@ export function Home() {
   const [hotspotImageDataUrl, setHotspotImageDataUrl] = useState("");
   const [hotspotImageName, setHotspotImageName] = useState("");
   const [hotspotError, setHotspotError] = useState<string | null>(null);
+  const [showAddBinForm, setShowAddBinForm] = useState(false);
+  const [isSubmittingBin, setIsSubmittingBin] = useState(false);
+  const [newBinType, setNewBinType] = useState<"Recycling" | "Compost" | "Trash">("Trash");
+  const [newBinError, setNewBinError] = useState<string | null>(null);
+  const [submittedBins, setSubmittedBins] = useState<
+    Array<{ id: string; position: LatLng; type: BinType }>
+  >([]);
 
-  const [useProxy, setUseProxy] = useState(true);
-  const [proxyKey, setProxyKey] =
-    useState<(typeof PROXY_LOCATIONS)[number]["key"]>("civic");
-  const [userLocation, setUserLocation] = useState<LatLng>(PROXY_LOCATIONS[0]);
   const [binLocations, setBinLocations] = useState<BinLocation[]>([]);
 
-  const activeLocation = useProxy
-    ? PROXY_LOCATIONS.find((p) => p.key === proxyKey) ?? PROXY_LOCATIONS[0]
-    : userLocation;
+  // 1. Restore the backend URL state (required for ngrok)
+  const envBackendBaseUrl = (import.meta.env.VITE_BACKEND_URL as string | undefined) ?? "http://localhost:8080";
+  const [backendBaseUrl, setBackendBaseUrl] = useState(() => {
+    const saved = window.localStorage.getItem(BACKEND_URL_STORAGE_KEY);
+    return normalizeBaseUrl(saved ?? envBackendBaseUrl);
+  });
 
+  // 2. Restore the hotspots state (so you don't crash the markers effect)
+  const [cleanupHotspots, setCleanupHotspots] = useState<CleanupHotspot[]>([]);
+
+  // 3. Define the report location (use the activeLocation so reports match your proxy)
+  
+
+  // For judging/demo, lock nearby-bin queries to Civic Center.
+  const activeLocation =
+    PROXY_LOCATIONS.find((p) => p.key === "civic") ?? PROXY_LOCATIONS[0];
+
+
+  const reportLocation = activeLocation;
+  
   const { isLoaded } = useLoadScript({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
     libraries: ["marker"],
   });
 
-  const [debug, setDebug] = useState<{ status: string; count: number; url?: string }>({
-  status: "idle",
-  count: 0,
-});
-  const topSafeOffset = "calc(env(safe-area-inset-top, 0px) + 12px)";
-  const topOverlayOffset = "calc(env(safe-area-inset-top, 0px) + 88px)";
+  const [debug, setDebug] = useState<{
+    status: string;
+    count: number;
+    url?: string;
+    lat?: number;
+    lng?: number;
+    httpStatus?: number;
+    firstId?: string;
+    error?: string;
+  }>({
+    status: "idle",
+    count: 0,
+  });
+  const topSafeOffset = "calc(env(safe-area-inset-top, 0px) + 4px)";
+  const topOverlayOffset = "calc(env(safe-area-inset-top, 0px) + 76px)";
+  const reportButtonOffset = "calc(env(safe-area-inset-top, 0px) + 84px)";
 
   const sfCenter = activeLocation;
 
   useEffect(() => {
-    if (!navigator.geolocation) return;
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setUserLocation({
-          lat: position.coords.latitude,
-          lng: position.coords.longitude,
-        });
-        setUseProxy(false);
-      },
-      () => {
-        // Keep proxy location when geolocation is unavailable/denied.
-      },
-    );
+    const onFocus = () => setPoints(getStoredPoints(mockUserStats.points));
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("storage", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("storage", onFocus);
+    };
   }, []);
 
   useEffect(() => {
@@ -193,14 +208,10 @@ export function Home() {
     };
   }, [map, isLoaded, activeLocation.lat, activeLocation.lng, binLocations]);
 
-  const cycleProxy = () => {
-    const idx = PROXY_LOCATIONS.findIndex((p) => p.key === proxyKey);
-    const next = PROXY_LOCATIONS[(idx + 1) % PROXY_LOCATIONS.length];
-    setProxyKey(next.key);
-  };
-
   const filteredBins =
-    selectedFilter === "all"
+    !showNearbyTrash
+      ? []
+      : selectedFilter === "all"
       ? binLocations
       : binLocations.filter((bin) => bin.type === selectedFilter);
 
@@ -209,6 +220,7 @@ export function Home() {
       BACKEND_URL_STORAGE_KEY,
       normalizeBaseUrl(backendBaseUrl),
     );
+    console.log("[bins] backendBaseUrl changed:", normalizeBaseUrl(backendBaseUrl));
   }, [backendBaseUrl]);
 
   // ...existing code...
@@ -234,14 +246,14 @@ export function Home() {
     });
     markers.push(userMarker);
 
-    const makeBadge = (type: BinType) => {
+    const makeBadge = (type: BinType, borderColor = "white") => {
       const el = document.createElement("div");
       el.style.width = "56px";
       el.style.height = "56px";
       el.style.borderRadius = "16px";
       el.style.display = "grid";
       el.style.placeItems = "center";
-      el.style.border = "4px solid white";
+      el.style.border = `4px solid ${borderColor}`;
       el.style.boxShadow = "0 10px 25px rgba(0,0,0,0.18)";
       el.style.cursor = "pointer";
 
@@ -272,37 +284,130 @@ export function Home() {
       markers.push(marker);
     });
 
+    cleanupHotspots.forEach((hotspot) => {
+      const el = document.createElement("div");
+      el.style.width = "44px";
+      el.style.height = "44px";
+      el.style.borderRadius = "50%";
+      el.style.background = "#f97316";
+      el.style.display = "flex";
+      el.style.alignItems = "center";
+      el.style.justifyContent = "center";
+      el.style.boxShadow = "0 8px 20px rgba(0,0,0,0.2)";
+      el.style.border = "3px solid white";
+      el.style.fontWeight = "700";
+      el.style.color = "white";
+      el.innerText = `${hotspot.itemCount}`;
+
+      markers.push(
+        new google.maps.marker.AdvancedMarkerElement({
+          map,
+          position: hotspot.position,
+          content: el,
+          zIndex: 1100,
+        }),
+      );
+    });
+
+    submittedBins.forEach((bin) => {
+      const content = makeBadge(bin.type, "#ef4444");
+      markers.push(
+        new google.maps.marker.AdvancedMarkerElement({
+          map,
+          position: bin.position,
+          content,
+          zIndex: 1050,
+        }),
+      );
+    });
+
 
     // Cleanup function to remove all markers from the map
     return () => {
       markers.forEach((m) => (m.map = null));
     };
-  }, [map, isLoaded, filteredBins, activeLocation.lat, activeLocation.lng, cleanupHotspots]);
+  }, [map, isLoaded, filteredBins, activeLocation.lat, activeLocation.lng, cleanupHotspots, submittedBins]);
 
   useEffect(() => {
+  if (!showNearbyTrash) {
+    setBinLocations([]);
+    setDebug({ status: "idle", count: 0 });
+    return;
+  }
+
   const controller = new AbortController();
 
   async function loadNearby() {
     const lat = activeLocation.lat;
     const lng = activeLocation.lng;
 
-    const API_BASE = import.meta.env.VITE_API_BASE_URL;
-
-    // ✅ IMPORTANT: fallback so you don't build "undefined/..."
-    const base = API_BASE?.trim() ? API_BASE.trim() : "";
+    const base = normalizeBaseUrl(backendBaseUrl);
     const url = `${base}/api/trashcans/nearby?lat=${lat}&lng=${lng}&limit=10&maxDistance=3000`;
+    // ✅ IMPORTANT: fallback so you don't build "undefined/..."
 
-    setDebug({ status: "loading", count: 0, url });
 
-    const res = await fetch(url, { signal: controller.signal });
-    const data = await res.json().catch(() => ({}));
+    console.log("[bins] loadNearby start", { url, lat, lng });
+    setDebug({ status: "loading", count: 0, url, lat, lng });
+
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "ngrok-skip-browser-warning": "true",
+      },
+    });
+    const rawText = await res.text();
+    const contentType = res.headers.get("content-type") ?? "";
+    const data = (() => {
+      try {
+        return rawText ? JSON.parse(rawText) : {};
+      } catch {
+        return {};
+      }
+    })();
+
+    if (!contentType.includes("application/json")) {
+      console.error("[bins] non-json response", {
+        status: res.status,
+        contentType,
+        preview: rawText.slice(0, 240),
+      });
+      setDebug({
+        status: "non-json response",
+        count: 0,
+        url,
+        lat,
+        lng,
+        httpStatus: res.status,
+        error: rawText.slice(0, 240),
+      });
+      return;
+    }
 
     if (!res.ok) {
-      setDebug({ status: `error ${res.status}`, count: 0, url });
+      console.error("[bins] loadNearby HTTP error", {
+        status: res.status,
+        url,
+        body: rawText.slice(0, 240),
+      });
+      setDebug({
+        status: `error ${res.status}`,
+        count: 0,
+        url,
+        lat,
+        lng,
+        httpStatus: res.status,
+        error: rawText.slice(0, 240),
+      });
       return;
     }
 
     const items = (data.items ?? []) as any[];
+    console.log("[bins] loadNearby response", {
+      status: res.status,
+      itemsCount: items.length,
+      firstItem: items[0] ?? null,
+      url,
+    });
     setBinLocations(
       items.map((x: any) => ({
         id: String(x.id),
@@ -314,15 +419,25 @@ export function Home() {
       })),
     );
 
-    setDebug({ status: "ok", count: items.length, url });
+    setDebug({
+      status: "ok",
+      count: items.length,
+      url,
+      lat,
+      lng,
+      httpStatus: res.status,
+      firstId: items[0]?.id ? String(items[0].id) : undefined,
+    });
   }
 
   loadNearby().catch((e) => {
-    setDebug({ status: `fetch failed`, count: 0, url: String(e) });
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[bins] loadNearby fetch failed", msg);
+    setDebug({ status: "fetch failed", count: 0, error: msg });
   });
 
   return () => controller.abort();
-}, [activeLocation.lat, activeLocation.lng]);
+}, [activeLocation.lat, activeLocation.lng, backendBaseUrl, showNearbyTrash]);
 
   
   const getBinIconUrl = (type: BinType) => {
@@ -346,17 +461,6 @@ export function Home() {
         return "bg-green-500";
       case "trash":
         return "bg-gray-500";
-    }
-  };
-
-  const getBinBorderColor = (type: BinType) => {
-    switch (type) {
-      case "recycle":
-        return "border-blue-500";
-      case "compost":
-        return "border-green-500";
-      case "trash":
-        return "border-gray-500";
     }
   };
 
@@ -402,19 +506,14 @@ export function Home() {
   `;
   };
 
-  async function testPing() {
-    try {
-      const res = await EcoQuestVision.ping();
-      alert(`Ping OK: ${res.message}`);
-    } catch (e) {
-      alert("Ping FAILED: " + String(e));
-    }
-}
-
   async function testBackendConnection() {
     const endpoint = `${normalizeBaseUrl(backendBaseUrl)}/health`;
     try {
-      const res = await fetch(endpoint);
+      const res = await fetch(endpoint, {
+        headers: {
+          "ngrok-skip-browser-warning": "true",
+        },
+      });
       const text = await res.text();
       alert(`Backend check: ${res.status}\n${endpoint}\n${text}`);
     } catch (err) {
@@ -432,6 +531,17 @@ export function Home() {
     if (isSubmittingHotspot) return;
     setShowHotspotForm(false);
     setHotspotError(null);
+  }
+
+  function openAddBinForm() {
+    setNewBinError(null);
+    setShowAddBinForm(true);
+  }
+
+  function closeAddBinForm() {
+    if (isSubmittingBin) return;
+    setShowAddBinForm(false);
+    setNewBinError(null);
   }
 
   async function onHotspotImageChange(
@@ -487,7 +597,10 @@ export function Home() {
       const endpoint = `${resolvedBackendBaseUrl}/api/trash-reports`;
       const res = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "true",
+        },
         body: JSON.stringify(payload),
       });
 
@@ -520,7 +633,85 @@ export function Home() {
     } finally {
       setIsSubmittingHotspot(false);
     }
+  }
+
+  async function submitNewBin(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setNewBinError(null);
+    setIsSubmittingBin(true);
+
+    try {
+      const resolvedBackendBaseUrl = normalizeBaseUrl(backendBaseUrl);
+      const payload = {
+        location: {
+          type: "Point",
+          coordinates: [reportLocation.lng, reportLocation.lat] as [number, number],
+        },
+        type: newBinType,
+        status: "Pending",
+        verificationCount: 0,
+        addedBy: "demo-user",
+      };
+
+      const endpoint = `${resolvedBackendBaseUrl}/api/bins`;
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "true",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Request failed (${res.status}) ${text}`);
+      }
+
+      const created = (await res.json()) as {
+        _id?: string;
+        location?: { coordinates?: [number, number] };
+        type?: "Recycling" | "Compost" | "Trash";
+      };
+
+      const mappedType: BinType =
+        (created.type ?? newBinType) === "Recycling"
+          ? "recycle"
+          : (created.type ?? newBinType) === "Compost"
+          ? "compost"
+          : "trash";
+
+      setBinLocations((prev) => [
+        ...prev,
+        {
+          id: created._id ?? String(Date.now()),
+          name: `${created.type ?? newBinType} Bin`,
+          type: mappedType,
+          address: "User-submitted bin",
+          position: {
+            lat: reportLocation.lat,
+            lng: reportLocation.lng,
+          },
+        },
+      ]);
+      setSubmittedBins((prev) => [
+        ...prev,
+        {
+          id: created._id ?? String(Date.now()),
+          type: mappedType,
+          position: { lat: reportLocation.lat, lng: reportLocation.lng },
+        },
+      ]);
+
+      setShowAddBinForm(false);
+      setNewBinType("Trash");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setNewBinError(`Failed to add bin: ${msg}. URL: ${backendBaseUrl}/api/bins`);
+    } finally {
+      setIsSubmittingBin(false);
     }
+  }
 
   return (
     <div className="w-full h-screen bg-gradient-to-b from-green-50 to-blue-50 overflow-hidden flex flex-col">
@@ -567,7 +758,7 @@ export function Home() {
                   Level {mockUserStats.level}
                 </div>
                 <div className="text-base sm:text-lg font-bold text-green-600">
-                  {mockUserStats.points}
+                  {points}
                 </div>
               </div>
               <div className="w-10 h-10 sm:w-12 sm:h-12 bg-gradient-to-br from-green-400 to-green-600 rounded-full flex items-center justify-center text-xl sm:text-2xl">
@@ -577,44 +768,11 @@ export function Home() {
           </div>
         </div>
 
-        <div
-          className="absolute left-3 z-40 pointer-events-none"
-          style={{ top: topOverlayOffset }}
-        >
-  <div className="bg-black/70 text-white text-xs rounded-xl px-3 py-2">
-    <div>Status: {debug.status}</div>
-    <div>Bins: {debug.count}</div>
-  </div>
-</div>
-
-
         {/* Filter buttons - Right side */}
         <div
           className="absolute right-3 sm:right-4 z-20 space-y-2 pointer-events-none"
           style={{ top: topOverlayOffset }}
         >
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={() => setShowLocationList(!showLocationList)}
-            className="w-12 h-12 sm:w-14 sm:h-14 bg-white rounded-2xl shadow-lg flex items-center justify-center border-2 border-gray-200 hover:border-green-500 transition-colors pointer-events-auto touch-manipulation"
-          >
-            <MapPin size={20} className="text-green-600 sm:w-6 sm:h-6" />
-          </motion.button>
-
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={() => setSelectedFilter("all")}
-            className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl shadow-lg flex items-center justify-center border-2 transition-colors pointer-events-auto touch-manipulation ${
-              selectedFilter === "all"
-                ? "bg-green-500 border-green-600"
-                : "bg-white border-gray-200"
-            }`}
-          >
-            <span className="text-xl sm:text-2xl">🌍</span>
-          </motion.button>
-
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
@@ -662,9 +820,16 @@ export function Home() {
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            onClick={() =>
-              setSelectedFilter(selectedFilter === "trash" ? "all" : "trash")
-            }
+            onClick={() => {
+              if (selectedFilter === "trash") {
+                setShowNearbyTrash(false);
+                setSelectedFilter("all");
+                setSelectedLocation(null);
+              } else {
+                setShowNearbyTrash(true);
+                setSelectedFilter("trash");
+              }
+            }}
             className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl shadow-lg flex items-center justify-center border-2 transition-colors pointer-events-auto touch-manipulation ${
               selectedFilter === "trash"
                 ? "bg-gray-500 border-gray-600"
@@ -681,95 +846,31 @@ export function Home() {
         </div>
 
         {/* Report Hotspot Button - Top left */}
-        <div className="absolute top-20 sm:top-24 left-3 sm:left-4 z-20 pointer-events-none">
+        <div
+          className="absolute left-3 sm:left-4 z-20 pointer-events-none flex flex-col items-start"
+          style={{ top: reportButtonOffset }}
+        >
           <motion.button
             whileHover={{ scale: 1.04 }}
             whileTap={{ scale: 0.96 }}
             onClick={openHotspotForm}
-            className="bg-orange-500 text-white px-4 sm:px-5 py-2.5 rounded-2xl shadow-lg font-semibold pointer-events-auto touch-manipulation"
+            className="bg-orange-500 text-white px-3 sm:px-4 py-2 rounded-xl text-sm sm:text-base shadow-lg font-semibold pointer-events-auto touch-manipulation"
           >
             Report Hotspot
           </motion.button>
+          <motion.button
+            whileHover={{ scale: 1.04 }}
+            whileTap={{ scale: 0.96 }}
+            onClick={openAddBinForm}
+            className="mt-2 bg-orange-500 text-white px-3 sm:px-4 py-2 rounded-xl text-sm sm:text-base shadow-lg font-semibold pointer-events-auto touch-manipulation"
+          >
+            Add New Bin
+          </motion.button>
         </div>
-
-        {/* Location list panel */}
-        <AnimatePresence>
-          {showLocationList && (
-            <motion.div
-              initial={{ x: "100%" }}
-              animate={{ x: 0 }}
-              exit={{ x: "100%" }}
-              transition={{ type: "spring", damping: 25 }}
-              className="absolute right-3 sm:right-4 left-3 sm:left-4 bottom-24 z-30 bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col"
-              style={{ top: topOverlayOffset }}
-            >
-              <div className="p-3 sm:p-4 border-b border-gray-200 flex items-center justify-between bg-gradient-to-r from-green-500 to-green-600">
-                <h2 className="text-base sm:text-lg font-bold text-white">
-                  Nearby Locations
-                </h2>
-                <button
-                  onClick={() => setShowLocationList(false)}
-                  className="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center touch-manipulation"
-                >
-                  <X size={20} className="text-white" />
-                </button>
-              </div>
-              <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3">
-                {filteredBins.map((bin) => {
-                  const isSelected = selectedLocation?.id === bin.id;
-
-                  return (
-                    <motion.button
-                      key={bin.id}
-                      whileHover={{ scale: 1.02 }}
-                      whileTap={{ scale: 0.98 }}
-                      onClick={() => {
-                        setSelectedLocation(bin);
-                        setShowLocationList(false);
-                      }}
-                      className={`w-full bg-white rounded-xl p-3 sm:p-4 shadow-md border-2 transition-colors touch-manipulation ${
-                        isSelected
-                          ? getBinBorderColor(bin.type)
-                          : "border-gray-200"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div
-                          className={`w-10 h-10 sm:w-12 sm:h-12 ${getBinColor(
-                            bin.type,
-                          )} rounded-xl flex items-center justify-center flex-shrink-0`}
-                        >
-                          <img
-                            src={getBinIconUrl(bin.type)}
-                            alt={`${bin.type} icon`}
-                            className="w-6 h-6 sm:w-8 sm:h-8"
-                          />
-                        </div>
-                        <div className="flex-1 text-left">
-                          <h3 className="font-bold text-gray-800 text-sm sm:text-base">
-                            {bin.name}
-                          </h3>
-                          <p className="text-xs sm:text-sm text-gray-600">
-                            {bin.address}
-                          </p>
-                          <p className="text-xs text-gray-500 mt-1">
-                            {bin.distance} away
-                          </p>
-                        </div>
-                        <ChevronRight size={20} className="text-gray-400" />
-                      </div>
-                    </motion.button>
-                  );
-                })}
-                
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
 
         {/* Selected location card */}
         <AnimatePresence>
-          {selectedLocation && !showLocationList && (
+          {selectedLocation && (
             <motion.div
               initial={{ y: 100, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
@@ -827,7 +928,7 @@ export function Home() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 z-40 bg-black/40 backdrop-blur-[2px] p-3 sm:p-4 flex items-end sm:items-center justify-center"
+              className="absolute inset-0 z-40 bg-black/40 backdrop-blur-[2px] px-3 py-6 sm:p-4 flex items-center justify-center"
             >
               <motion.form
                 initial={{ y: 50, opacity: 0, scale: 0.98 }}
@@ -835,7 +936,7 @@ export function Home() {
                 exit={{ y: 40, opacity: 0, scale: 0.98 }}
                 transition={{ type: "spring", damping: 24, stiffness: 260 }}
                 onSubmit={submitHotspotReport}
-                className="w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden"
+                className="w-full max-w-lg max-h-[86vh] mt-28 sm:mt-32 bg-white rounded-3xl shadow-2xl overflow-hidden"
               >
                 <div className="bg-gradient-to-r from-orange-500 to-red-500 p-4 sm:p-5 flex items-center justify-between">
                   <div>
@@ -916,13 +1017,6 @@ export function Home() {
                     )}
                   </div>
 
-                  <div className="rounded-xl bg-gray-50 border border-gray-200 p-3">
-                    <p className="text-xs text-gray-600">Location (fixed for demo)</p>
-                    <p className="text-sm font-semibold text-gray-800">
-                      lat: {reportLocation.lat}, lng: {reportLocation.lng}
-                    </p>
-                  </div>
-
                   {hotspotError && (
                     <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-sm text-red-700">
                       {hotspotError}
@@ -943,45 +1037,108 @@ export function Home() {
             </motion.div>
           )}
         </AnimatePresence>
-// ...existing code...
 
-        {/* Test Ping Button - bottom center above Scan */}
-        <div className="absolute bottom-36 sm:bottom-40 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={testPing}
-            className="bg-black text-white px-5 py-2 rounded-full shadow-lg font-semibold pointer-events-auto touch-manipulation"
-          >
-            Test Ping
-          </motion.button>
-        </div>
+        {/* Add New Bin Form */}
+        <AnimatePresence>
+          {showAddBinForm && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 z-40 bg-black/40 backdrop-blur-[2px] px-3 py-6 sm:p-4 flex items-center justify-center"
+            >
+              <motion.form
+                initial={{ y: 50, opacity: 0, scale: 0.98 }}
+                animate={{ y: 0, opacity: 1, scale: 1 }}
+                exit={{ y: 40, opacity: 0, scale: 0.98 }}
+                transition={{ type: "spring", damping: 24, stiffness: 260 }}
+                onSubmit={submitNewBin}
+                className="w-full max-w-lg max-h-[86vh] mt-20 sm:mt-24 bg-white rounded-3xl shadow-2xl overflow-hidden"
+              >
+                <div className="bg-gradient-to-r from-orange-500 to-red-500 p-4 sm:p-5 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-white font-bold text-lg sm:text-xl">Add New Bin</h2>
+                    <p className="text-white/90 text-xs sm:text-sm">Submit a crowdsourced bin</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeAddBinForm}
+                    className="w-9 h-9 bg-white/20 rounded-full flex items-center justify-center"
+                  >
+                    <X size={18} className="text-white" />
+                  </button>
+                </div>
 
+                <div className="p-4 sm:p-5 space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Backend URL</label>
+                    <div className="flex gap-2">
+                      <input
+                        value={backendBaseUrl}
+                        onChange={(e) => setBackendBaseUrl(e.target.value)}
+                        className="flex-1 rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
+                        placeholder="https://your-tunnel.ngrok-free.dev"
+                      />
+                      <button
+                        type="button"
+                        onClick={testBackendConnection}
+                        className="px-3 py-2 rounded-xl bg-slate-700 text-white text-sm font-semibold"
+                      >
+                        Test
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Bin Type</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(["Recycling", "Compost", "Trash"] as const).map((type) => (
+                        <button
+                          key={type}
+                          type="button"
+                          onClick={() => setNewBinType(type)}
+                          className={`rounded-xl border px-3 py-2 text-sm font-semibold ${
+                            newBinType === type
+                              ? "border-orange-600 bg-orange-600 text-white"
+                              : "border-gray-300 bg-white text-gray-700"
+                          }`}
+                        >
+                          {type}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {newBinError && (
+                    <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-sm text-red-700">
+                      {newBinError}
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 sm:p-5 border-t border-gray-200">
+                  <button
+                    type="submit"
+                    disabled={isSubmittingBin}
+                    className="w-full bg-gradient-to-r from-orange-500 to-red-500 text-white py-3 rounded-xl font-bold shadow-lg disabled:opacity-60"
+                  >
+                    {isSubmittingBin ? "Submitting..." : "Submit Report"}
+                  </button>
+                </div>
+              </motion.form>
+            </motion.div>
+          )}
+        </AnimatePresence>
         {/* Scan Button */}
         <div className="absolute bottom-20 sm:bottom-24 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={() => navigate("/scan")}
-            className="bg-gradient-to-r from-green-500 to-green-600 text-white px-8 sm:px-10 py-4 sm:py-5 rounded-full shadow-2xl flex items-center gap-2 sm:gap-3 font-bold text-base sm:text-lg border-4 border-white pointer-events-auto touch-manipulation"
+            className="w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-green-600 text-white shadow-2xl border-4 border-white pointer-events-auto touch-manipulation flex items-center justify-center"
           >
-            <Camera size={28} className="sm:w-8 sm:h-8" />
-            Scan Item
+            <Camera size={34} className="sm:w-10 sm:h-10" />
           </motion.button>
-        </div>
-
-        {/* Legend */}
-        <div className="absolute bottom-20 sm:bottom-24 left-3 sm:left-4 z-20 pointer-events-none">
-          <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg p-2 sm:p-3 space-y-2 pointer-events-auto">
-            <div className="flex items-center gap-2">
-              <div className="w-5 h-5 sm:w-6 sm:h-6 bg-orange-500 rounded-full flex items-center justify-center">
-                <span className="text-white text-xs font-bold">{cleanupHotspots.length}</span>
-              </div>
-              <span className="text-xs text-gray-700 font-medium">
-                Hotspots
-              </span>
-            </div>
-          </div>
         </div>
 
         <BottomNav />

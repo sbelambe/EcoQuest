@@ -20,12 +20,11 @@ export function BottomNav() {
             <button
               key={item.path}
               onClick={() => navigate(item.path)}
-              className={`flex flex-col items-center justify-center gap-1 flex-1 h-full transition-colors touch-manipulation ${
+              className={`flex items-center justify-center flex-1 h-full transition-colors touch-manipulation ${
                 isActive ? "text-green-600" : "text-gray-500"
               }`}
             >
-              <Icon size={24} strokeWidth={isActive ? 2.5 : 2} />
-              <span className="text-xs">{item.label}</span>
+              <Icon size={30} strokeWidth={isActive ? 2.5 : 2} />
             </button>
           );
         })}

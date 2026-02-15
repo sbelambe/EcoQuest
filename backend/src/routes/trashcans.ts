@@ -23,7 +23,12 @@ async function getCollection() {
     client = new MongoClient(uri);
     await client.connect();
   }
-  return client.db(dbName).collection(collectionName);
+  const col = client.db(dbName).collection(collectionName);
+
+  // Ensure geospatial index exists even when querying through native driver.
+  await col.createIndex({ location: "2dsphere" });
+  
+  return col;
 }
 
 router.get("/nearby", async (req, res) => {
@@ -39,12 +44,16 @@ router.get("/nearby", async (req, res) => {
 
   try {
     const col = await getCollection();
+    console.log(
+      `[trashcans/nearby] Querying with lng=${lng}, lat=${lat}, maxDistance=${maxDistance}, limit=${limit}`,
+    );
 
     // Geo query: requires location 2dsphere index + GeoJSON field
     const docs = await col
       .find({
         location: {
           $near: {
+            // GeoJSON order must be [longitude, latitude]
             $geometry: { type: "Point", coordinates: [lng, lat] },
             $maxDistance: maxDistance,
           },
