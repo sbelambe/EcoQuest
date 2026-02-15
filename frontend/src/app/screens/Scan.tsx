@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";
 import { Camera as CameraIcon, X } from "lucide-react";
 import { Camera, CameraResultType, CameraSource } from "@capacitor/camera";
 import { dataUrlToBlob } from "../utils/upload";
 import type { ItemType } from "../data/mockData";
+import { EcoQuestVision } from "../plugins/ecoQuestVision";
+
 
 type InferResponse = {
   itemType: ItemType; // "trash" | "recycle" | "compost"
@@ -37,8 +39,8 @@ export function Scan() {
   const [isScanning, setIsScanning] = useState(false);
   const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  const ML_API_URL = import.meta.env.VITE_ML_API_URL as string | undefined;
+const startedRef = useRef(false);
+  // const ML_API_URL = import.meta.env.VITE_ML_API_URL as string | undefined;
 
   async function captureFromCamera() {
     if (isScanning) return;
@@ -66,14 +68,15 @@ export function Scan() {
       // Save image for ScanResult preview
       sessionStorage.setItem("lastScanImage", dataUrl);
 
-      if (!ML_API_URL) {
-        throw new Error(
-          "Missing VITE_ML_API_URL. Set it to your ngrok https URL."
-        );
-      }
-
+      // if (!ML_API_URL) {
+      //   throw new Error(
+      //     "Missing VITE_ML_API_URL. Set it to your ngrok https URL."
+      //   );
+      // }
       // Call model
-      const result = await inferWasteType(ML_API_URL, dataUrl);
+      // const result = await inferWasteType(ML_API_URL, dataUrl);
+
+      const result = await EcoQuestVision.infer({ dataUrl });
 
       // Store model outputs for ScanResult
       sessionStorage.setItem("lastScanType", result.itemType);
@@ -97,6 +100,8 @@ export function Scan() {
   }
 
   useEffect(() => {
+    if (startedRef.current) return;
+  startedRef.current = true;
     // auto-open camera on mount
     captureFromCamera();
     // eslint-disable-next-line react-hooks/exhaustive-deps
