@@ -10,3 +10,5 @@
 
 /frontend/guidelines/
 /backend/executorch/
+/backend/ml/__pycache__/
+/backend/ml/.venv/
