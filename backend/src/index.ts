@@ -7,6 +7,7 @@ import { binRouter } from "./routes/binroutes.js";
 import { trashReportRouter } from "./routes/trashreportroutes.js";
 import { userRouter } from "./routes/userroutes.js";
 import trashcansRouter from "./routes/trashcans.js";
+import { recyclingLogRouter } from "./routes/recyclinglogroutes.js";
 
 
 async function main() {
@@ -15,12 +16,18 @@ async function main() {
   app.use(cors({
   origin: "*",
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "ngrok-skip-browser-warning",
+    "Accept",
+  ],
 }));
   app.use(express.json({ limit: "10mb" })); // for base64 images if needed
   app.use("/api/bins", binRouter);
   app.use("/api/trash-reports", trashReportRouter);
   app.use("/api/users", userRouter);
+  app.use("/api/recycling-logs", recyclingLogRouter);
   
   app.use("/api/trashcans", trashcansRouter);
 

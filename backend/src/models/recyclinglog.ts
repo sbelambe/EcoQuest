@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 
 const RecyclingLogSchema = new mongoose.Schema({
-  userId: { type: String, required: true, index: true }, // Index for fast lookup
+  userId: { type: String, default: "demo-user", index: true }, // Optional for demo mode
   itemType: { type: String, required: true }, // e.g. "Plastic Bottle"
   carbonSaved: { type: Number, required: true }, // e.g. 0.05
   location: {
@@ -11,4 +11,8 @@ const RecyclingLogSchema = new mongoose.Schema({
   timestamp: { type: Date, default: Date.now }, // The "When"
 });
 
-export const RecyclingLog = mongoose.model("RecyclingLog", RecyclingLogSchema);
+export const RecyclingLog = mongoose.model(
+  "RecyclingLog",
+  RecyclingLogSchema,
+  "recycling-logs",
+);
