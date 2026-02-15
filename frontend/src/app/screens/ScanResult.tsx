@@ -18,6 +18,10 @@ export function ScanResult() {
   const [itemType, setItemType] = useState<ItemType>("recycle");
   const [showConfetti, setShowConfetti] = useState(false);
 
+  const [label, setLabel] = useState<string>("");
+const [confidence, setConfidence] = useState<number>(0);
+
+
   // NEW
   const [scanImage, setScanImage] = useState<string | null>(null);
 
@@ -27,6 +31,12 @@ export function ScanResult() {
 
     const storedImg = sessionStorage.getItem("lastScanImage");
     if (storedImg) setScanImage(storedImg);
+
+      const storedLabel = sessionStorage.getItem("lastScanLabel");
+  if (storedLabel) setLabel(storedLabel);
+
+  const storedConf = sessionStorage.getItem("lastScanConfidence");
+  if (storedConf) setConfidence(Number(storedConf));
 
     setShowConfetti(true);
   }, []);
