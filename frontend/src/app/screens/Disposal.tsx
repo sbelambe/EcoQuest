@@ -5,6 +5,7 @@ import { MapPin, Navigation, CheckCircle, ArrowLeft, Trash2, Recycle, Leaf } fro
 
 export function Disposal() {
   const navigate = useNavigate();
+  const topSafeOffset = "calc(env(safe-area-inset-top, 0px) + 8px)";
   const [disposed, setDisposed] = useState(false);
 
   const nearbyBins = [
@@ -81,7 +82,10 @@ export function Disposal() {
   return (
     <div className="min-h-screen bg-gradient-to-b from-green-50 to-blue-50">
       {/* Header */}
-      <div className="bg-white border-b border-gray-200 p-6 sticky top-0 z-10">
+      <div
+        className="bg-white border-b border-gray-200 p-6 sticky top-0 z-10"
+        style={{ paddingTop: topSafeOffset }}
+      >
         <div className="flex items-center gap-4">
           <button
             onClick={() => navigate(-1)}

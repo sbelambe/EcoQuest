@@ -6,11 +6,15 @@ import { mockLeaderboard, mockCityLeaderboard, mockUserStats } from "../data/moc
 
 export function Leaderboard() {
   const [selectedTab, setSelectedTab] = useState<"global" | "city">("global");
+  const topSafeOffset = "calc(env(safe-area-inset-top, 0px) + 12px)";
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-green-50 to-blue-50 pb-20">
       {/* Header */}
-      <div className="bg-gradient-to-r from-yellow-400 to-orange-400 text-white p-6 rounded-b-3xl shadow-lg">
+      <div
+        className="bg-gradient-to-r from-yellow-400 to-orange-400 text-white p-6 rounded-b-3xl shadow-lg"
+        style={{ paddingTop: topSafeOffset }}
+      >
         <div className="flex items-center gap-3 mb-4">
           <Trophy size={32} />
           <div>
