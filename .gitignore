@@ -12,3 +12,8 @@
 /backend/executorch/
 /backend/ml/__pycache__/
 /backend/ml/.venv/
+/backend/dist
+backend/venv
+/EcoQuest/.DS_Store
+/backend/.DS_Store
+/frontend/.DS_Store

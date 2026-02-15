@@ -1,12 +1,25 @@
+import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { TrendingUp, Settings, Share2, LogOut, Flame, Trophy, MapPin, Calendar } from "lucide-react";
 import { BottomNav } from "../components/BottomNav";
 import { PetAvatar } from "../components/PetAvatar";
 import { mockUserStats, mockScanHistory, getCurrentTier, mockPet } from "../data/mockData";
+import { getStoredPoints } from "../data/points";
 
 export function Profile() {
-  const currentTier = getCurrentTier(mockUserStats.points);
+  const [points, setPoints] = useState(() => getStoredPoints(mockUserStats.points));
+  const currentTier = getCurrentTier(points);
   const topSafeOffset = "calc(env(safe-area-inset-top, 0px) + 12px)";
+
+  useEffect(() => {
+    const onFocus = () => setPoints(getStoredPoints(mockUserStats.points));
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("storage", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("storage", onFocus);
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-green-50 to-blue-50 pb-20">
@@ -40,7 +53,7 @@ export function Profile() {
         <div className="grid grid-cols-3 gap-3">
           {[
             { label: "Rank", value: `#${mockUserStats.rank}`, icon: Trophy },
-            { label: "Points", value: mockUserStats.points.toLocaleString(), icon: TrendingUp },
+            { label: "Points", value: points.toLocaleString(), icon: TrendingUp },
             { label: "Streak", value: `${mockUserStats.streak}d`, icon: Flame },
           ].map((stat, index) => {
             const Icon = stat.icon;
@@ -126,7 +139,7 @@ export function Profile() {
                 <TrendingUp size={20} className="text-green-600" />
               </div>
             </div>
-            <div className="text-2xl font-bold text-gray-800">{mockUserStats.points.toLocaleString()}</div>
+            <div className="text-2xl font-bold text-gray-800">{points.toLocaleString()}</div>
             <div className="text-sm text-gray-600">Total Points</div>
           </motion.div>
 
